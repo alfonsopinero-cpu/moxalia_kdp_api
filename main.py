@@ -42,6 +42,9 @@ from PySide6.QtCore import QUrl
 # =========================
 load_dotenv()
 
+REQ_IMAGENES_PATH = Path.cwd() / "requerimientos_imagenes.txt"
+REQ_TEXTO_PATH = Path.cwd() / "requerimientos_texto.txt"
+
 DEFAULT_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini")
 DEFAULT_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5")
 
@@ -84,9 +87,51 @@ class IllustrationRow(BaseModel):
     Nombre_fichero_editorial: str
     Nombre_fichero_descargado: str
     Comentario_editorial: str
+    Prompt_core: str
     Prompt_final: str
     Prompt_negativo: str
 
+def load_requirement_file(path: Path) -> dict:
+    if not path.exists():
+        return {"status": "missing", "content": ""}
+
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return {"status": "empty", "content": ""}
+
+    return {"status": "ok", "content": content}
+
+def build_prompt_final(
+    *,
+    spec: BookSpec,
+    row: IllustrationRow,
+    req_img: str,
+    req_txt: str,
+) -> str:
+    return (
+        "=== COLORING BOOK PROMPT ===\n\n"
+        "BOOK CONTEXT\n"
+        f"Title / Theme: {spec.tema}\n"
+        f"Audience: {spec.publico}\n"
+        f"Geographic scope: {spec.alcance_geografico}\n"
+        f"Language: {spec.idioma_texto}\n\n"
+        "EDITORIAL IMAGE REQUIREMENTS\n"
+        f"{req_img}\n\n"
+        "EDITORIAL TEXT REQUIREMENTS\n"
+        f"{req_txt}\n\n"
+        "DIFFICULTY PARAMETERS (MANDATORY)\n"
+        f"Difficulty level: {row.Difficulty_D}/100\n"
+        f"Block: {row.Difficulty_block}\n"
+        f"Line thickness (L): {row.Line_thickness_L}\n"
+        f"White space dominance (W): {row.White_space_W}\n"
+        f"Structural complexity (C): {row.Complexity_C}\n"
+        "DIFFICULTY INTERPRETATION (MANDATORY)\n"
+        "Higher difficulty means MORE distinct drawable elements.\n"
+        "Increase the number of architectural sub-elements, foreground elements, and mid-ground details with difficulty.\n"
+        "Difficulty must be visible at first glance when comparing pages.\n"
+        "SCENE DESCRIPTION\n"
+        f"{row.Prompt_core}"
+    ).strip()
 
 # =========================
 # OPENAI HELPERS
@@ -151,13 +196,22 @@ def build_difficulty_sequence(total: int, start: str, end: str) -> list[dict]:
     return sequence
     
 
-def generate_illustrations(client: OpenAI, spec: BookSpec, text_model: str, progress_cb=None) -> List[IllustrationRow]:
+def generate_illustrations(
+    client: OpenAI,
+    spec: BookSpec,
+    text_model: str,
+    *,
+    req_img: str,
+    req_txt: str,
+    progress_cb=None,
+) -> List[IllustrationRow]:
 
     difficulty_sequence = build_difficulty_sequence(
         total=spec.numero_imagenes,
         start=spec.dificultad_inicial,
         end=spec.dificultad_final,
     )
+
     if progress_cb:
         progress_cb(15, "Difficulty sequence built")
     system = (
@@ -166,29 +220,31 @@ def generate_illustrations(client: OpenAI, spec: BookSpec, text_model: str, prog
         "You must output a JSON array of objects with EXACT keys:\n"
         "ID, Categoria, Publico, Pais_Region, Monumento, Main_foco, "
         "Nombre_fichero_editorial, Nombre_fichero_descargado, "
-        "Comentario_editorial, Prompt_final, Prompt_negativo\n"
+        "Comentario_editorial, Prompt_core, Prompt_negativo\n"
+        "Prompt_core MUST contain ONLY the scene description.\n"
+        "DO NOT include difficulty, requirements, formatting rules, or meta instructions.\n"
+        "Main_foco MUST describe: the main monument, the real, plausible surrounding environment, a human-scale point of view\n"
+        "Main_foco must describe a REALISTIC and geographically plausible scene. Do NOT invent landscape elements that do not exist at the real location.\n"
+        "Comentario_editorial MUST be a poetic and inspirational text.\n"
+        "It MUST be between 5 and 10 lines long.\n"
+        "Each line should be a full, meaningful sentence.\n"
+        "The text must describe an emotional or reflective moment connected to the scene.\n"
+        "It must NOT describe technical, historical, or architectural details.\n"
+        "It must NOT explain the monument.\n"
         "Constraints:\n"
-        f"- Exactly {spec.numero_imagenes} rows.\n"
-        "- ID must be a zero-padded integer string like 001, 002, ...\n"
-        "- Do not repeat the same country in consecutive rows.\n"
-        "- The order of illustrations is final.\n"
-        "- Prompts MUST be black-and-white line art for coloring books.\n"
-        "- No shading, no gray, no fills.\n"
+        "All format, aspect ratio, audience and theme values come from book_spec.\n"
+        "Do NOT infer or override these values\n"
+        f"Exactly {spec.numero_imagenes} rows.\n"
+        "ID must be a zero-padded integer string like 001, 002, ...\n"
+        "Do not repeat the same country in consecutive rows.\n"
+        "The order of illustrations is final.\n"
+        "Prompts MUST be black-and-white line art for coloring books.\n"
+        "No shading, no gray, no fills.\n"
     )
-
     user = {
         "book_spec": spec.model_dump(),
-        "difficulty_sequence": difficulty_sequence,
-        "instructions": (
-            "For each illustration index i, you MUST embed the following in Prompt_final:\n"
-            "- Difficulty level: D/100\n"
-            "- Difficulty block\n"
-            "- Line thickness (L)\n"
-            "- White space dominance (W)\n"
-            "- Structural detail complexity (C)\n"
-            "Use EXACT values from difficulty_sequence[i].\n"
-        ),
     }
+
     if progress_cb:
         progress_cb(30, "Calling OpenAI (text model)")
 
@@ -217,11 +273,19 @@ def generate_illustrations(client: OpenAI, spec: BookSpec, text_model: str, prog
 
         row = IllustrationRow(
             **obj,
+            Prompt_final="",  # placeholder
             Difficulty_D=d["D"],
             Difficulty_block=d["block"],
             Line_thickness_L=d["L"],
             White_space_W=d["W"],
             Complexity_C=d["C"],
+        )
+
+        row.Prompt_final = build_prompt_final(
+            spec=spec,
+            row=row,
+            req_img=req_img,
+            req_txt=req_txt,
         )
         rows.append(row)
 
@@ -258,7 +322,7 @@ def generate_image_png(client: OpenAI, prompt: str, negative: str, out_path: Pat
     img = client.images.generate(
         model=image_model,
         prompt=final_prompt,
-        size="1024x1024",
+        size="1024x1536",
     )
     if progress_cb:
         progress_cb(70, "Image generated, saving file")
@@ -297,11 +361,13 @@ class WorkerSignals(QObject):
 
 
 class GenerateBookWorker(QRunnable):
-    def __init__(self, client: OpenAI, spec: BookSpec, text_model: str):
+    def __init__(self, client, spec, text_model, *, req_img: str, req_txt: str):
         super().__init__()
         self.client = client
         self.spec = spec
         self.text_model = text_model
+        self.req_img = req_img
+        self.req_txt = req_txt
         self.signals = WorkerSignals()
 
     def run(self):
@@ -311,8 +377,11 @@ class GenerateBookWorker(QRunnable):
                 self.client,
                 self.spec,
                 self.text_model,
+                req_img=self.req_img,
+                req_txt=self.req_txt,
                 progress_cb=lambda p, m: self.signals.progress.emit(p, m),
             )
+
             self.signals.ok.emit(rows)
         except Exception as e:
             self.signals.err.emit(str(e))
@@ -349,35 +418,106 @@ class GenerateImageWorker(QRunnable):
 class BlockingOverlay(QFrame):
     def __init__(self, parent):
         super().__init__(parent)
+        self._lock_label = False
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet("background-color: rgba(0,0,0,160);")
         self.setGeometry(parent.rect())
         self.setVisible(False)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
 
         self.label = QLabel("Working...")
-        self.label.setStyleSheet("color: white; font-size: 16px;")
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setStyleSheet("""
+            color: white;
+            font-size: 20px;
+            letter-spacing: 0.5px;
+            font-weight: bold;
+        """)
         layout.addWidget(self.label)
 
         self.bar = QProgressBar()
+        self.bar.setFixedHeight(23)
+        self.bar.setStyleSheet("""
+        QProgressBar {
+            border: 1px solid #444;
+            border-radius: 6px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #4CAF50;
+            border-radius: 6px;
+        }
+        """)
         self.bar.setRange(0, 100)
         layout.addWidget(self.bar)
-
+    def start_indeterminate(self, text="🤖 AI is thinking…"):
+        self._lock_label = True
+        self.label.setText(text)
+        self.bar.setRange(0, 0)   # barra animada
+        self.setVisible(True)
+        self.raise_()
     def start(self, text="Working..."):
+        self._lock_label = False
+        self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.label.setText(text)
         self.setVisible(True)
+        self.raise_()   # 🔴 CLAVE
 
     def update(self, value: int, text: str):
-        self.bar.setValue(value)
-        self.label.setText(text)
+        if self.bar.minimum() == 0 and self.bar.maximum() == 0:
+            # transición controlada a determinista
+            self.bar.setRange(0, 100)
+            self._lock_label = False
 
+        self.bar.setValue(value)
+
+        if not self._lock_label:
+            self.label.setText(text)
     def stop(self):
+        self._lock_label = False
+        self.bar.setRange(0, 100)
+        self.bar.setValue(100)
         self.setVisible(False)
 
 
 class MainWindow(QMainWindow):
+    def _refresh_requirement(self, which: str):
+        if which == "img":
+            data = load_requirement_file(REQ_IMAGENES_PATH)
+            self.req_imagenes = data
+            self._set_req_label(
+                self.lbl_req_img,
+                "Image requirements",
+                data["status"],
+            )
+
+        elif which == "txt":
+            data = load_requirement_file(REQ_TEXTO_PATH)
+            self.req_texto = data
+            self._set_req_label(
+                self.lbl_req_txt,
+                "Text requirements",
+                data["status"],
+            )
+
+    def _on_req_clicked(self, which: str):
+        if which == "img":
+            status = self.req_imagenes["status"]
+            path = REQ_IMAGENES_PATH
+        else:
+            status = self.req_texto["status"]
+            path = REQ_TEXTO_PATH
+
+        if status == "ok":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        else:
+            self._refresh_requirement(which)
+
     def resizeEvent(self, event):
         self.overlay.setGeometry(self.rect())
         super().resizeEvent(event)
@@ -406,6 +546,10 @@ class MainWindow(QMainWindow):
         self.client = OpenAI()
         self.pool = QThreadPool.globalInstance()
         self.overlay = BlockingOverlay(self)
+        self.overlay.setGeometry(self.rect())
+        self.overlay.hide()
+        self.req_imagenes = load_requirement_file(REQ_IMAGENES_PATH)
+        self.req_texto = load_requirement_file(REQ_TEXTO_PATH)
 
 
         self.rows: List[IllustrationRow] = []
@@ -435,6 +579,29 @@ class MainWindow(QMainWindow):
         main.addLayout(right, 2)
 
         form_box = QGroupBox("Book inputs")
+        req_box = QGroupBox("Editorial requirements")
+        left.addWidget(req_box)
+        req_layout = QVBoxLayout(req_box)
+
+        self.lbl_req_img = QLabel()
+        self.lbl_req_txt = QLabel()
+
+        self.lbl_req_img.setCursor(QCursor(Qt.PointingHandCursor))
+        self.lbl_req_txt.setCursor(QCursor(Qt.PointingHandCursor))
+
+        self.lbl_req_img.mousePressEvent = lambda e: self._on_req_clicked("img")
+        self.lbl_req_txt.mousePressEvent = lambda e: self._on_req_clicked("txt")
+
+        self._set_req_label(self.lbl_req_img, "Image requirements", self.req_imagenes["status"])
+        self._set_req_label(self.lbl_req_txt, "Text requirements", self.req_texto["status"])
+
+        self.lbl_req_img.setStyleSheet("text-decoration: underline;")
+        self.lbl_req_txt.setStyleSheet("text-decoration: underline;")
+
+        req_layout.addWidget(self.lbl_req_img)
+        req_layout.addWidget(self.lbl_req_txt)
+
+
         left.addWidget(form_box)
         form = QFormLayout(form_box)
 
@@ -529,11 +696,12 @@ class MainWindow(QMainWindow):
 
         self.txt_prompt = QPlainTextEdit()
         self.txt_prompt.setReadOnly(True)
-        rvl.addWidget(self.txt_prompt, 1)
+        rvl.addWidget(self.txt_prompt, 2)
 
-        self.txt_negative = QPlainTextEdit()
-        self.txt_negative.setReadOnly(True)
-        rvl.addWidget(self.txt_negative, 1)
+        self.txt_editorial = QPlainTextEdit()
+        self.txt_editorial.setReadOnly(True)
+        rvl.addWidget(self.txt_editorial, 1)
+
 
         self.btn_generate_image = QPushButton("Generate image for selected row")
         self.btn_generate_image.setEnabled(False)
@@ -584,6 +752,14 @@ class MainWindow(QMainWindow):
         painter.end()
         return pix
 
+    def _set_req_label(self, label: QLabel, name: str, status: str):
+        if status == "ok":
+            label.setText(f"🟢 {name}: loaded")
+        elif status == "empty":
+            label.setText(f"🟡 {name}: file is empty")
+        else:
+            label.setText(f"🔴 {name}: file not found")
+
     def validate_form(self):
         ok = (
             self.ed_book_id.text().strip() != ""
@@ -620,11 +796,28 @@ class MainWindow(QMainWindow):
         except ValidationError as e:
             QMessageBox.critical(self, "Invalid inputs", str(e))
             return
-        self.overlay.start("Generating book structure...")
+        if (
+            self.req_imagenes["status"] != "ok"
+            or self.req_texto["status"] != "ok"
+        ):
+            QMessageBox.critical(
+                self,
+                "Editorial requirements missing",
+                "Image and text requirement files must exist and not be empty "
+                "before generating a book.",
+            )
+            return
         self.btn_generate_book.setEnabled(False)
         text_model = self.get_selected_text_model()
         self.lbl_status.setText("Generating book table via OpenAI...")
-        worker = GenerateBookWorker(self.client, spec, text_model)
+        self.overlay.start_indeterminate("🤖 AI is generating the book…")
+        worker = GenerateBookWorker(
+            self.client,
+            spec,
+            text_model,
+            req_img=self.req_imagenes["content"],
+            req_txt=self.req_texto["content"],
+        )
         worker.signals.ok.connect(self.on_book_generated)
         worker.signals.err.connect(self.on_worker_error)
         worker.signals.progress.connect(self.overlay.update)
@@ -684,8 +877,19 @@ class MainWindow(QMainWindow):
         row_idx = sel[0].row()
         row = self.rows[row_idx]
         self.sel_title.setText(f"Row {row_idx+1}: {row.ID} - {row.Categoria} - {row.Pais_Region}")
-        self.txt_prompt.setPlainText(row.Prompt_final)
-        self.txt_negative.setPlainText(row.Prompt_negativo)
+        combined_prompt = (
+            "=== IMAGE PROMPT ===\n\n"
+            f"{row.Prompt_final}\n\n"
+            "--- NEGATIVE CONSTRAINTS ---\n"
+            f"{row.Prompt_negativo}"
+        )
+        self.txt_prompt.setPlainText(combined_prompt)
+
+        self.txt_editorial.setPlainText(
+            "=== INSPIRATIONAL TEXT ===\n\n"
+            f"{row.Comentario_editorial}"
+        )
+
         self.btn_generate_image.setEnabled(True)
 
     def on_generate_image(self):
@@ -694,9 +898,9 @@ class MainWindow(QMainWindow):
         if not sel:
             return
         row = self.rows[sel[0].row()]
-        self.overlay.start(f"Generating image {row.ID}...")
 
         image_model = self.get_selected_image_model()
+        self.overlay.start_indeterminate("🎨 AI is generating the image…")
         worker = GenerateImageWorker(self.client, row, image_model)
         worker.signals.progress.connect(self.overlay.update)
         worker.signals.ok.connect(self.on_image_generated)
