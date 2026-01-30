@@ -42,6 +42,10 @@ from PySide6.QtCore import QUrl
 # =========================
 load_dotenv()
 
+IMAGE_RESOLUTIONS = {
+    "Working (1024 x 1536)": "1024x1536",
+    "Final KDP (2550 x 3300)": "2550x3300",
+}
 REQ_IMAGENES_PATH = Path.cwd() / "requerimientos_imagenes.txt"
 REQ_TEXTO_PATH = Path.cwd() / "requerimientos_texto.txt"
 
@@ -308,7 +312,16 @@ def generate_illustrations(
     return rows
 
 
-def generate_image_png(client: OpenAI, prompt: str, negative: str, out_path: Path, image_model: str, signals=None,  progress_cb=None) -> None:
+def generate_image_png(
+    client: OpenAI,
+    prompt: str,
+    negative: str,
+    out_path: Path,
+    image_model: str,
+    image_resolution: str,
+    signals=None,
+    progress_cb=None,
+) -> None:
     final_prompt = (
         "BLACK AND WHITE COLORING BOOK LINE ART.\n"
         "Only clean black outlines on white background.\n"
@@ -322,7 +335,7 @@ def generate_image_png(client: OpenAI, prompt: str, negative: str, out_path: Pat
     img = client.images.generate(
         model=image_model,
         prompt=final_prompt,
-        size="1024x1536",
+        size=image_resolution,
     )
     if progress_cb:
         progress_cb(70, "Image generated, saving file")
@@ -389,11 +402,18 @@ class GenerateBookWorker(QRunnable):
 
 
 class GenerateImageWorker(QRunnable):
-    def __init__(self, client: OpenAI, row: IllustrationRow, image_model: str):
+    def __init__(
+        self,
+        client: OpenAI,
+        row: IllustrationRow,
+        image_model: str,
+        image_resolution: str,
+    ):
         super().__init__()
         self.client = client
         self.row = row
         self.image_model = image_model
+        self.image_resolution = image_resolution
         self.signals = WorkerSignals()
 
     def run(self):
@@ -404,7 +424,9 @@ class GenerateImageWorker(QRunnable):
                 prompt=self.row.Prompt_final,
                 negative=self.row.Prompt_negativo,
                 out_path=out_path,
-                image_model=self.image_model, progress_cb=lambda p, m: self.signals.progress.emit(p, m)
+                image_model=self.image_model,
+                image_resolution=self.image_resolution,
+                progress_cb=lambda p, m: self.signals.progress.emit(p, m)
             )
             self.signals.ok.emit(str(out_path))
         except Exception as e:
@@ -486,6 +508,10 @@ class BlockingOverlay(QFrame):
 
 
 class MainWindow(QMainWindow):
+    def get_selected_image_resolution(self) -> str:
+        label = self.cb_image_resolution.currentText()
+        return IMAGE_RESOLUTIONS[label]
+
     def _refresh_requirement(self, which: str):
         if which == "img":
             data = load_requirement_file(REQ_IMAGENES_PATH)
@@ -638,6 +664,11 @@ class MainWindow(QMainWindow):
             self.cb_text_model.setCurrentIndex(idx_text)
         form.addRow("Text model", self.cb_text_model)
 
+        self.cb_image_resolution = QComboBox()
+        self.cb_image_resolution.addItems(IMAGE_RESOLUTIONS.keys())
+        self.cb_image_resolution.setCurrentText("Working (1024 x 1536)")
+        form.addRow("Image resolution", self.cb_image_resolution)
+
         self.cb_image_model = QComboBox()
         for m in self.available_image_models:
             self.cb_image_model.addItem(m)
@@ -645,7 +676,6 @@ class MainWindow(QMainWindow):
         if idx_image != -1:
             self.cb_image_model.setCurrentIndex(idx_image)
         form.addRow("Image model", self.cb_image_model)
-
         form.addRow("Book ID", self.ed_book_id)
         form.addRow("Publico", self.cb_publico)
         form.addRow("Tema", self.ed_tema)
@@ -901,7 +931,14 @@ class MainWindow(QMainWindow):
 
         image_model = self.get_selected_image_model()
         self.overlay.start_indeterminate("🎨 AI is generating the image…")
-        worker = GenerateImageWorker(self.client, row, image_model)
+        image_resolution = self.get_selected_image_resolution()
+
+        worker = GenerateImageWorker(
+            self.client,
+            row,
+            image_model,
+            image_resolution,
+        )
         worker.signals.progress.connect(self.overlay.update)
         worker.signals.ok.connect(self.on_image_generated)
         worker.signals.err.connect(self.on_worker_error)
