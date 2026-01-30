@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.venv/
+venv/
+
+# Environment
+.env
+
+# Outputs
+illustraciones/
+book_state.json
+*.xlsx
+node_modules/
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+node_modules
