@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 from openai import OpenAI
 
-from PySide6.QtCore import Qt, QObject, QRunnable, QThreadPool, Signal, QSize
+from PySide6.QtCore import Qt, QObject, QRunnable, QThreadPool, Signal, QSize, QEvent, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -34,11 +34,13 @@ from PySide6.QtWidgets import (
     QFrame,
     QProgressBar,
     QFileDialog,
-    QInputDialog,  
-    
+    QInputDialog,
+    QGraphicsView,
+    QGraphicsScene,
+    QGraphicsTextItem,
 
 )
-from PySide6.QtGui import QIcon, QPixmap, QColor, QBrush, QCursor, QDesktopServices, QAction
+from PySide6.QtGui import QIcon, QPixmap, QColor, QBrush, QCursor, QDesktopServices, QAction, QPainter, QWheelEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtCore import QUrl
 
 # =========================
@@ -265,6 +267,8 @@ def generate_illustrations(
         "The order of illustrations is final.\n"
         "Prompts MUST be black-and-white line art for coloring books.\n"
         "No shading, no gray, no fills.\n"
+        "Prompt_negativo MUST strictly forbid: black backgrounds, dark fills, silhouettes, inverted colors, grayscale, shading, gradients, textures, cross-hatching, text, logos, numbers.\n"
+
     )
     user = {
         "book_spec": spec.model_dump(),
@@ -343,14 +347,12 @@ def generate_image_png(
     signals=None,
     progress_cb=None,
 ) -> None:
+
     final_prompt = (
-        "BLACK AND WHITE COLORING BOOK LINE ART.\n"
-        "Only clean black outlines on white background.\n"
-        "No grayscale, no shading, no hatching, no fills.\n"
-        "High contrast, printable, crisp lines.\n\n"
-        f"PROMPT:\n{prompt}\n\n"
-        f"NEGATIVE:\n{negative}\n"
+        f"{prompt}\n\n"
+        f"NEGATIVE PROMPT:\n{negative}"
     )
+
     if progress_cb:
         progress_cb(0, "Starting image generation")
     img = client.images.generate(
@@ -397,6 +399,8 @@ class WorkerSignals(QObject):
 class GenerateBookWorker(QRunnable):
     def __init__(self, client, spec, text_model, *, req_img: str, req_txt: str):
         super().__init__()
+
+
         self.client = client
         self.spec = spec
         self.text_model = text_model
@@ -531,112 +535,478 @@ class BlockingOverlay(QFrame):
         self.bar.setValue(100)
         self.setVisible(False)
 
+class ZoomableGraphicsView(QGraphicsView):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._zoom = 0
+        self._zoom_min = -10
+        self._zoom_max = 25
+
+    def wheelEvent(self, event: QWheelEvent):
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+
+        step = 1 if delta > 0 else -1
+        new_zoom = self._zoom + step
+        if new_zoom < self._zoom_min or new_zoom > self._zoom_max:
+            return
+
+        self._zoom = new_zoom
+        factor = 1.25 if step > 0 else 0.8
+        self.scale(factor, factor)
+        event.accept()
+        return
+    def reset_zoom(self):
+        self._zoom = 0
+        self.resetTransform()
+
 class ImageReviewDialog(QDialog):
-    def __init__(self, parent, row: IllustrationRow, image_path: Path):
-        super().__init__(parent)          # ✅ ESTA LÍNEA ES LA CLAVE
+
+    def __init__(self, parent, row: IllustrationRow, image_path: Path, start_index: int):
+        from PySide6.QtWidgets import QScrollArea
+        self.parent_window = parent
+        self.current_index = start_index
+              
+        super().__init__(parent)   
+        self.setWindowFlags(
+            Qt.Dialog |
+            Qt.Window |
+            Qt.WindowMinMaxButtonsHint |
+            Qt.WindowCloseButtonHint
+        )
+        self.shortcut_prev = QShortcut(QKeySequence(Qt.Key_Left), self)
+        self.shortcut_prev.activated.connect(self._go_prev)
+
+        self.shortcut_next = QShortcut(QKeySequence(Qt.Key_Right), self)
+        self.shortcut_next.activated.connect(self._go_next)
+
+        self.shortcut_close = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self.shortcut_close.activated.connect(self.reject)
+
+        # QShortcut(QKeySequence(Qt.Key_Left), self, activated=self._go_prev)
+        # QShortcut(QKeySequence(Qt.Key_Right), self, activated=self._go_next)
+        # QShortcut(QKeySequence(Qt.Key_Escape), self, activated=self.reject)      # ✅ ESTA LÍNEA ES LA CLAVE
+        self.setWindowModality(Qt.WindowModal)   # bloquea SOLO el mainwindow
+        self.setWindowTitle(f"Review image {row.ID}")
+        self.setMinimumSize(1200, 800)
+        self.resize(1400, 900)
+
+
         self.row = row                   # ✅ para _approve/_reject
 
-        self.setWindowTitle(f"Review image {row.ID}")
-        self.setModal(True)
-
-
-        # Tamaño mínimo pensado para 14" (1920x1200 @150%)
-        self.setMinimumSize(1200, 800)
-        self.resize(1400, 900)   # tamaño inicial razonable
-        self.setSizeGripEnabled(True)
-
+        
+                
         root = QHBoxLayout(self)
 
         # =========================
         # LEFT: IMAGE (MAX SPACE)
         # =========================
         left = QVBoxLayout()
-        root.addLayout(left, 3)  # 75% espacio
+        root.addLayout(left)
+        root.setStretch(0, 1)   # izquierda ocupa todo lo posible
+        root.setStretch(1, 0)   # derecha mantiene ancho fijo
 
-        self.img_label = QLabel()
-        self.img_label.setAlignment(Qt.AlignCenter)
-        self.img_label.setStyleSheet("background-color: #111;")
+        self.scene = QGraphicsScene(self)
+        self.view = ZoomableGraphicsView(self.scene)
+        self.view.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+        self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
-        pix = QPixmap(str(image_path))
-        self.img_label.setPixmap(
-            pix.scaled(
-                900, 1200,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-        )
+        left.addWidget(self.view, 10)   # ✅ antes estaba en 0
 
-        left.addWidget(self.img_label)
+        nav = QHBoxLayout()
+        self.btn_prev = QPushButton("← Previous")
+        self.btn_next = QPushButton("Next →")
+        self.btn_prev.clicked.connect(self._go_prev)
+        self.btn_next.clicked.connect(self._go_next)
+
+        nav.addWidget(self.btn_prev)
+        nav.addWidget(self.btn_next)
+        self.lbl_index = QLabel()
+        nav.addWidget(self.lbl_index)
+        left.addLayout(nav)
+
 
         # =========================
         # RIGHT: INFO PANEL
         # =========================
-        right = QVBoxLayout()
-        right.setSpacing(8)
-        root.addLayout(right, 2)  # 25% espacio
+        right_container = QWidget()
+        right_container.setFixedWidth(600)
+        from PySide6.QtWidgets import QSizePolicy
+
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(6, 6, 6, 6)
 
         # --- Prompt ---
         prompt_box = QGroupBox("Prompt (final + negative)")
         prompt_layout = QVBoxLayout(prompt_box)
+        self.txt_prompt = QPlainTextEdit()
+        self.txt_prompt.setReadOnly(True)
+        prompt_layout.addWidget(self.txt_prompt)
+        right_layout.addWidget(prompt_box)
 
-        txt_prompt = QPlainTextEdit()
-        txt_prompt.setReadOnly(True)
-        txt_prompt.setPlainText(
-            row.Prompt_final + "\n\n--- NEGATIVE PROMPT ---\n\n" + row.Prompt_negativo
-        )
-        prompt_layout.addWidget(txt_prompt)
-        right.addWidget(prompt_box, 2)
-
-        # --- Editorial text ---
+        # --- Editorial ---
         text_box = QGroupBox("Inspirational text")
         text_layout = QVBoxLayout(text_box)
-
         self.txt_editorial = QPlainTextEdit()
-        self.txt_editorial.setPlainText(row.Comentario_editorial)
         text_layout.addWidget(self.txt_editorial)
-        right.addWidget(text_box, 1)
+        right_layout.addWidget(text_box)
 
-        # --- Rejection reason ---
-        self.reject_reason = QLineEdit()
+        # --- Rejection ---
+        self.reject_reason = QPlainTextEdit()
         self.reject_reason.setPlaceholderText("Reason for rejection (required)")
-        if row.rejection_reason:
-            self.reject_reason.setText(row.rejection_reason)
-        right.addWidget(self.reject_reason)
+        self.reject_reason.setMinimumHeight(140)
+        right_layout.addWidget(self.reject_reason)
 
         # --- Buttons ---
         btn_layout = QHBoxLayout()
         self.btn_approve = QPushButton("Approve")
         self.btn_reject = QPushButton("Reject")
         self.btn_cancel = QPushButton("Close")
-
+        self.lbl_status = QLabel()
+        self.lbl_status.setFixedHeight(28)
+        self.lbl_status.setMinimumWidth(100)
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setStyleSheet("""
+            QLabel {
+                border-radius: 6px;
+                font-weight: bold;
+                padding: 4px 10px;
+            }
+        """)
         btn_layout.addWidget(self.btn_approve)
         btn_layout.addWidget(self.btn_reject)
+        btn_layout.addWidget(self.lbl_status)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_cancel)
+        right_layout.addLayout(btn_layout)
 
-        right.addLayout(btn_layout)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(right_container)
+      
+
+        root.addWidget(scroll)
+        root.setStretch(0, 1)   # left ocupa el resto
+        root.setStretch(1, 0)   # right queda fijo
+        scroll.setFixedWidth(600)
 
         # --- Signals ---
         self.btn_approve.clicked.connect(self._approve)
         self.btn_reject.clicked.connect(self._reject)
         self.btn_cancel.clicked.connect(self.reject)
+        self.lbl_index.setText(f"{self.current_index + 1} / {len(self.parent_window.rows)}")
+        self._load_current()
+
+
 
 
     def _approve(self):
+        if not self.btn_approve.isEnabled():
+            return
         self.row.approval_status = "approved"
         self.row.rejection_reason = ""
-        self.accept()
+        self.parent_window._apply_row_color(self.current_index, "approved")
+        self.parent_window.on_save_project(silent=True)
+        self.reject_reason.clear()
+        self._update_status_badge()
+        self._go_next()
+        if self.current_index == len(self.parent_window.rows) - 1:
+          QMessageBox.information(self, "Done", "Last image reviewed.")
+        
 
+  
     def _reject(self):
-        reason = self.reject_reason.text().strip()
-        if not reason:
-            QMessageBox.warning(
-                self, "Missing reason", "Please provide a reason for rejection."
+        if self.row.approval_status == "approved":
+            reply = QMessageBox.warning(
+                self,
+                "Approved image",
+                "This image is already APPROVED.\n"
+                "Changing its status may affect the final book.\n\n"
+                "Do you want to continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
+            if reply != QMessageBox.Yes:
+                return
+
+        if not self.btn_reject.isEnabled():
             return
+        reason = self.reject_reason.toPlainText().strip()
+        if not reason:
+            QMessageBox.warning(self, "Missing reason", "Please provide a reason for rejection.")
+            return
+        if self.row.approval_status == "approved":
+            reply = QMessageBox.warning(
+                self,
+                "Already approved",
+                "This image is already approved.\nDo you really want to reject it?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+            )
+            if reply != QMessageBox.Yes:
+                return
         self.row.approval_status = "rejected"
         self.row.rejection_reason = reason
+        self.parent_window._apply_row_color(self.current_index, "rejected")
+        self.parent_window.on_save_project(silent=True)
+        self._update_status_badge()
+        self._go_next()
+        if self.current_index == len(self.parent_window.rows) - 1:
+            QMessageBox.information(self, "Done", "Last image reviewed.")
+
+    def _go_prev(self):
+        if self.current_index > 0:
+            self.parent_window.on_save_project(silent=True)
+
+            self.current_index -= 1
+            self._load_current()
+
+    def _go_next(self):
+        if self.current_index < len(self.parent_window.rows) - 1:
+            self.parent_window.on_save_project(silent=True)
+
+            self.current_index += 1
+            self._load_current()
+
+    def _load_current(self):
+        # Always update index and base row first
+        self.view.resetTransform()
+        row = self.parent_window.rows[self.current_index]
+        self.row = row
+        self.lbl_index.setText(f"{self.current_index + 1} / {len(self.parent_window.rows)}")
+
+        img_base = self.parent_window.images_dir if self.parent_window.images_dir else OUT_DIR
+        img_path = img_base / f"{row.ID}.png"
+
+        # Reset view/scene always
+        self.scene.clear()
+
+        # If image missing -> hard disable + clear + placeholder
+        if not img_path.exists():
+            # Disable actions (hard)
+            self.btn_approve.setEnabled(False)
+            self.btn_reject.setEnabled(False)
+
+            # Clear text panels (hard)
+            self.txt_prompt.setPlainText(f"[{row.ID}] Image not created yet.")
+            self.txt_editorial.clear()
+            self.reject_reason.clear()
+
+            # Placeholder in the image area
+            placeholder = QGraphicsTextItem("Image not created yet")
+            placeholder.setDefaultTextColor(QColor("#888888"))
+            placeholder.setScale(2.0)
+            self.scene.addItem(placeholder)
+            self.view.centerOn(placeholder)
+            self._update_status_badge()
+            return
+
+        # Image exists -> enable actions
+        self.btn_approve.setEnabled(True)
+        self.btn_reject.setEnabled(True)
+        if row.approval_status == "approved":
+            self.btn_approve.setEnabled(False)
+            self.btn_reject.setEnabled(False)
+            self.reject_reason.setEnabled(False)
+        if row.approval_status == "rejected":
+            self.btn_reject.setEnabled(False)
+        # Load image
+        pix = QPixmap(str(img_path))
+        self.pixmap_item = self.scene.addPixmap(pix)
+
+        self.view.resetTransform()
+        self.view.setSceneRect(self.pixmap_item.boundingRect())
+
+        QTimer.singleShot(0, lambda: (
+            self.view.fitInView(
+                self.pixmap_item.boundingRect(),
+                Qt.KeepAspectRatio
+            )
+        ))
+
+        # Update right panel texts
+        self.txt_prompt.setPlainText(
+            row.Prompt_final + "\n\n--- NEGATIVE PROMPT ---\n\n" + row.Prompt_negativo
+        )
+        self.txt_editorial.setPlainText(row.Comentario_editorial)
+        self.reject_reason.setPlainText(row.rejection_reason or "")
+        self._update_status_badge()
+
+
+    def _update_status_badge(self):
+        status = self.row.approval_status
+
+        if status == "approved":
+            self.lbl_status.setText("APPROVED")
+            self.lbl_status.setStyleSheet("""
+                QLabel {
+                    background-color: #2f6f4e;
+                    color: white;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    padding: 4px 10px;
+                }
+            """)
+        elif status == "rejected":
+            self.lbl_status.setText("REJECTED")
+            self.lbl_status.setStyleSheet("""
+                QLabel {
+                    background-color: #7a2e2e;
+                    color: white;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    padding: 4px 10px;
+                }
+            """)
+        else:
+            self.lbl_status.setText("PENDING")
+            self.lbl_status.setStyleSheet("""
+                QLabel {
+                    background-color: #cccccc;
+                    color: #333333;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    padding: 4px 10px;
+                }
+            """)
+
+
+
+class BatchImageGenerationDialog(QDialog):
+    def __init__(self, parent, rows):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.rows = rows
+        self.total = len(rows)
+        self.current = 0
+        self.stop_requested = False
+
+        self.setWindowTitle("Generating pending images")
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumSize(1200, 800)
+
+        root = QHBoxLayout(self)
+
+        # LEFT: image preview
+        self.scene = QGraphicsScene(self)
+        self.view = QGraphicsView(self.scene)
+        self.view.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.view, 2)
+
+        # RIGHT: info
+        right = QVBoxLayout()
+        root.addLayout(right, 1)
+
+        self.lbl_progress = QLabel()
+        self.lbl_progress.setAlignment(Qt.AlignCenter)
+        self.lbl_progress.setStyleSheet("font-size:16px;font-weight:bold;")
+        right.addWidget(self.lbl_progress)
+
+        self.txt_info = QPlainTextEdit()
+        self.txt_info.setReadOnly(True)
+        right.addWidget(self.txt_info)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, self.total)
+        right.addWidget(self.progress)
+
+        self.btn_stop = QPushButton("Stop after current image")
+        self.btn_stop.clicked.connect(self._request_stop)
+        right.addWidget(self.btn_stop)
+
+        self._update_ui()
+        self._start_current()
+    def _request_stop(self):
+        self.stop_requested = True
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setText("Stopping…")
+    def _update_ui(self):
+        row = self.rows[self.current]
+        self.lbl_progress.setText(
+            f"Generating {self.current + 1} / {self.total}"
+        )
+        self.progress.setValue(self.current)
+
+        self.txt_info.setPlainText(
+            f"ID: {row.ID}\n"
+            f"Country: {row.Pais_Region}\n"
+            f"Monument: {row.Monumento}\n\n"
+            f"{row.Comentario_editorial}"
+        )
+    def _start_current(self):
+        row = self.rows[self.current]
+
+        image_model = self.parent_window.get_selected_image_model()
+        image_resolution = self.parent_window.get_selected_image_resolution()
+
+        worker = GenerateImageWorker(
+            self.parent_window.client,
+            row,
+            image_model,
+            image_resolution,
+            self.parent_window.images_dir,
+        )
+        worker.signals.ok.connect(self._on_image_done)
+        worker.signals.err.connect(self._on_error)
+        worker.signals.progress.connect(self.parent_window.overlay.update)
+
+        self.parent_window.overlay.start_indeterminate(
+            f"Generating image {row.ID}"
+        )
+        self.parent_window.pool.start(worker)
+    def _on_image_done(self, out_path: str):
+        self.parent_window.overlay.stop()
+
+        self.scene.clear()
+        pix = QPixmap(out_path)
+        self.scene.addPixmap(pix)
+        self.view.fitInView(
+            self.scene.itemsBoundingRect(),
+            Qt.KeepAspectRatio,
+        )
+        row = self.rows[self.current]
+        row.approval_status = "pending"
+        self.parent_window.on_save_project(silent=True)
+
+        self.progress.setValue(self.current + 1)
+        for r_idx, r in enumerate(self.parent_window.rows):
+            if r.ID == row.ID:
+                item = QTableWidgetItem()
+                item.setIcon(self.parent_window._icon_ok)
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.parent_window.table.setItem(r_idx, 0, item)
+                break
+
+        if self.stop_requested:
+            QMessageBox.information(
+                self,
+                "Generation stopped",
+                f"Stopped after {self.current + 1} images.",
+            )
+            self.accept()
+            return
+
+        self.current += 1
+        if self.current >= self.total:
+            QMessageBox.information(
+                self,
+                "Done",
+                "All pending images have been generated.",
+            )
+            self.accept()
+            return
+
+        self._update_ui()
+        self._start_current()
+    def _on_error(self, msg: str):
+        self.parent_window.overlay.stop()
+        QMessageBox.critical(self, "Error", msg)
         self.accept()
+
 
 class MainWindow(QMainWindow):
     def get_selected_image_resolution(self) -> str:
@@ -661,6 +1031,28 @@ class MainWindow(QMainWindow):
                 "Text requirements",
                 data["status"],
             )
+    def on_generate_pending_images(self):
+        if not self.images_dir:
+            QMessageBox.warning(self, "No project", "Open a project first.")
+            return
+
+        pending = [
+            row for row in self.rows
+            if row.approval_status != "approved"
+            and not (self.images_dir / f"{row.ID}.png").exists()
+        ]
+
+
+        if not pending:
+            QMessageBox.information(
+                self,
+                "Nothing to do",
+                "There are no pending images to generate.",
+            )
+            return
+
+        dlg = BatchImageGenerationDialog(self, pending)
+        dlg.exec()
 
     def on_create_new_book(self):   
         # Caso A: no hay proyecto cargado
@@ -799,6 +1191,15 @@ class MainWindow(QMainWindow):
         self.action_generar_imagen.triggered.connect(self.on_generate_image)
         acciones_menu.addAction(self.action_generar_imagen)
 
+        self.action_generar_imagenes_pendientes = QAction(
+            "Generar imágenes pendientes", self
+        )
+        self.action_generar_imagenes_pendientes.setEnabled(False)
+        self.action_generar_imagenes_pendientes.triggered.connect(
+            self.on_generate_pending_images
+        )
+        acciones_menu.addAction(self.action_generar_imagenes_pendientes)
+
         # ----- CENTRAL UI -----
         root = QWidget()
         self.setCentralWidget(root)
@@ -900,7 +1301,7 @@ class MainWindow(QMainWindow):
 
         self.cb_image_resolution = QComboBox()
         self.cb_image_resolution.addItems(IMAGE_RESOLUTIONS.keys())
-        self.cb_image_resolution.setCurrentText("Testing (1024 x 1024)")
+        self.cb_image_resolution.setCurrentText("Working (1024 x 1536)")
         form_right.addRow("Image resolution", self.cb_image_resolution)
 
         self.cb_image_model = QComboBox()
@@ -1031,6 +1432,12 @@ class MainWindow(QMainWindow):
         # Sync menu action enable state:
         if hasattr(self, "action_generar_libro"):
             self.action_generar_libro.setEnabled(ok)
+        
+        if hasattr(self, "action_generar_imagenes_pendientes"):
+            self.action_generar_imagenes_pendientes.setEnabled(
+                self.project_dir is not None and bool(self.rows)
+            )
+
 
     def on_row_selected(self):
         sel = self.table.selectionModel().selectedRows()
@@ -1214,6 +1621,8 @@ class MainWindow(QMainWindow):
             img_item = QTableWidgetItem()
             img_item.setIcon(icon)
             self.table.setItem(row_idx, 0, img_item)
+            img_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+
             # Fill rest of columns from row dict
             for c_idx, (_, attr) in enumerate(self.TABLE_COLUMN_MAP, start=1):
                 value = getattr(row, attr, "")
@@ -1239,7 +1648,7 @@ class MainWindow(QMainWindow):
         self.validate_form()
         self.action_generar_libro.setEnabled(True)
 
-    def on_save_project(self):
+    def on_save_project(self, *, silent: bool = False):
         # 1) Validar formulario
         try:
             spec = self.get_spec()
@@ -1312,7 +1721,8 @@ class MainWindow(QMainWindow):
             f"Current book: {self.project_dir.name}\n{self.project_dir}"
         )
 
-        QMessageBox.information(self, "Saved", "Project saved successfully.")
+        if not silent:
+            QMessageBox.information(self, "Saved", "Project saved successfully.")
 
     def reset_project_state(self):
         self.project_dir = None
@@ -1524,7 +1934,7 @@ class MainWindow(QMainWindow):
                 icon_item.setIcon(self._icon_disabled)
                 icon_item.setToolTip("Image not found")
                 # Set as enabled (but we handle click as do-nothing), or can set ~enabled
-                icon_item.setFlags(Qt.NoItemFlags)
+                icon_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
 
             # Slightly center the icon
             icon_item.setTextAlignment(Qt.AlignCenter)
@@ -1638,6 +2048,7 @@ class MainWindow(QMainWindow):
         img_base = self.images_dir if self.images_dir else OUT_DIR
         img_path = img_base / f"{row.ID}.png"
 
+        # Si no hay imagen, preguntar si generar (permitido incluso si está approved)
         if not img_path.exists():
             reply = QMessageBox.question(
                 self,
@@ -1650,15 +2061,16 @@ class MainWindow(QMainWindow):
                 self.on_generate_image()
             return
 
-        row = self.rows[row_idx]
-        img_path = self.images_dir / f"{row.ID}.png"
-
-        dlg = ImageReviewDialog(self, row, img_path)
-        if dlg.exec():
-            self._apply_row_color(row_idx, row.approval_status)
-            self.on_save_project()
-
-
+        # Si hay imagen, SIEMPRE abrir review (aunque sea approved)
+        try:
+            dlg = ImageReviewDialog(self, row, img_path, row_idx)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Image review error",
+                f"Failed to open image review window:\n{e}"
+            )
 
 
 def main():

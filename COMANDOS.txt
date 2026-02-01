@@ -2,3 +2,41 @@ COMANDOS
 
 .venv\Scripts\Activate.ps1
 python main.py
+
+
+COMANDOS GIT
+
+0️⃣ Comprobaciones rápidas (30 segundos, recomendado)
+        git status
+    Verifica:
+    main.py
+    requerimientos_imagenes.txt
+    requerimientos_texto*.txt
+    NO aparece .venv/
+    Si ves .venv, para y dime antes de seguir.
+
+1️⃣ Añadir los cambios al staging
+    Opción segura (recomendada)
+    Añade solo lo que toca:
+        git add main.py requerimientos_imagenes.txt requerimientos_texto.txt
+    Si el fichero de texto se llama distinto (ej. requerimientos_texto - copia.txt):
+    git add main.py requerimientos_imagenes.txt "requerimientos_texto - copia.txt"
+    ⚠️ Opción rápida (solo si estás seguro)
+        git add .
+    (úsala solo si git status no muestra basura)
+2️⃣ Commit con mensaje claro (versión 1)
+    Te recomiendo este mensaje exacto (profesional y trazable)
+       git commit -m "v1.0: Editorially controlled prompt pipeline with UI preview and requirements enforcement"
+    Si prefieres algo más explícito:
+        git commit -m "v1.0: Deterministic prompt generation, editorial rules enforcement, and unified UI preview"
+3️⃣ (Opcional pero MUY recomendable) Tag de versión
+    Esto deja marcado el hito y te salva en el futuro.
+        git tag v1.0
+    Si quieres anotado (mejor práctica):
+        git tag -a v1.0 -m "Version 1.0 - Stable editorial prompt and image generation pipeline"
+4️⃣ Push (si tienes remoto)
+        git push
+        git push --tags
+    Si es la primera vez en esa rama:
+        git push -u origin main
+        git push --tags
