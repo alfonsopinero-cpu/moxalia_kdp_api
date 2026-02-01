@@ -448,16 +448,40 @@ class GenerateImageWorker(QRunnable):
         try:
             self.images_dir.mkdir(parents=True, exist_ok=True)
             out_path = self.images_dir / f"{self.row.ID}.png"
+
+            # --- BASE PROMPTS ---
+            prompt = self.row.Prompt_final
+            negative = self.row.Prompt_negativo
+
+            # --- A4.4: Inject rejection reason if regenerating ---
+            if (
+                self.row.approval_status == "rejected"
+                and self.row.rejection_reason.strip()
+            ):
+                prompt = (
+                    f"{prompt}\n\n"
+                    "EDITORIAL REVISION FEEDBACK (MANDATORY):\n"
+                    "The previous image was rejected for the following reason(s):\n"
+                    f"{self.row.rejection_reason}\n\n"
+                    "You MUST explicitly correct these issues while strictly respecting:\n"
+                    "- all original style rules\n"
+                    "- coloring-book constraints\n"
+                    "- difficulty parameters\n"
+                    "- black-and-white line art only\n"
+                )
+
             generate_image_png(
-                self.client,
-                prompt=self.row.Prompt_final,
-                negative=self.row.Prompt_negativo,
+                client=self.client,
+                prompt=prompt,
+                negative=negative,
                 out_path=out_path,
                 image_model=self.image_model,
                 image_resolution=self.image_resolution,
                 progress_cb=lambda p, m: self.signals.progress.emit(p, m),
             )
+
             self.signals.ok.emit(str(out_path))
+
         except Exception as e:
             self.signals.err.emit(str(e))
 
@@ -716,7 +740,7 @@ class ImageReviewDialog(QDialog):
         self._go_next()
         if self.current_index == len(self.parent_window.rows) - 1:
           QMessageBox.information(self, "Done", "Last image reviewed.")
-        
+        self.update_editorial_status()
 
   
     def _reject(self):
@@ -756,7 +780,7 @@ class ImageReviewDialog(QDialog):
         self._go_next()
         if self.current_index == len(self.parent_window.rows) - 1:
             QMessageBox.information(self, "Done", "Last image reviewed.")
-
+        self.update_editorial_status()
     def _go_prev(self):
         if self.current_index > 0:
             self.parent_window.on_save_project(silent=True)
@@ -828,9 +852,21 @@ class ImageReviewDialog(QDialog):
         ))
 
         # Update right panel texts
-        self.txt_prompt.setPlainText(
-            row.Prompt_final + "\n\n--- NEGATIVE PROMPT ---\n\n" + row.Prompt_negativo
+        prompt_text = (
+            row.Prompt_final
+            + "\n\n--- NEGATIVE PROMPT ---\n\n"
+            + row.Prompt_negativo
         )
+
+        if row.rejection_reason:
+            prompt_text += (
+                "\n\n=== PREVIOUS IMAGE REJECTION ===\n"
+                "A previous version of this image was generated and rejected for the following reason:\n\n"
+                f"{row.rejection_reason}\n"
+            )
+
+        self.txt_prompt.setPlainText(prompt_text)
+
         self.txt_editorial.setPlainText(row.Comentario_editorial)
         self.reject_reason.setPlainText(row.rejection_reason or "")
         self._update_status_badge()
@@ -1128,14 +1164,21 @@ class MainWindow(QMainWindow):
         ("Bloque", "Difficulty_block"),
         ("Nivel dificultad", "Difficulty_D"),
     ]
-    
+    def update_editorial_status(self):
+        approved = sum(1 for r in self.rows if r.approval_status == "approved")
+        rejected = sum(1 for r in self.rows if r.approval_status == "rejected")
+        pending = len(self.rows) - approved - rejected
+
+        self.lbl_editorial_status.setText(
+            f"Approved: {approved} | Pending: {pending} | Rejected: {rejected}"
+        )
     def __init__(self):
         super().__init__()
         self.setWindowTitle("KDP Coloring Book Builder (MVP)")
         self.resize(1400, 900)              # tamaño inicial razonable
         self.setMinimumSize(1280, 800)      # 👈 clave para pantallas 14"
-
-
+        # --- Editorial status indicators ---
+       
         self.client = OpenAI()
         self.pool = QThreadPool.globalInstance()
         self.overlay = BlockingOverlay(self)
@@ -1207,6 +1250,13 @@ class MainWindow(QMainWindow):
 
         left = QVBoxLayout()
         main.addLayout(left, 3)
+        # --- Editorial status indicators (A4.3) ---
+        self.lbl_editorial_status = QLabel("Approved: 0 | Pending: 0 | Rejected: 0")
+        self.lbl_editorial_status.setAlignment(Qt.AlignLeft)
+        self.lbl_editorial_status.setStyleSheet(
+            "font-weight: bold; padding: 6px;"
+        )
+        left.addWidget(self.lbl_editorial_status)
 
         project_box = QGroupBox("Project")
         left.addWidget(project_box)
@@ -1647,6 +1697,7 @@ class MainWindow(QMainWindow):
         self.on_row_selected()
         self.validate_form()
         self.action_generar_libro.setEnabled(True)
+        self.update_editorial_status()
 
     def on_save_project(self, *, silent: bool = False):
         # 1) Validar formulario
@@ -1978,13 +2029,15 @@ class MainWindow(QMainWindow):
                 ),
                 encoding="utf-8",
             )
-
+        self.update_editorial_status()  
 
 
     def on_image_generated(self, out_path: str):
         self.overlay.stop()
         self.btn_generate_image.setEnabled(True)
         self.lbl_image_status.setText(f"Saved: {out_path}")
+
+        row.approval_status = "pending"
 
         # Refrescar icono de la fila
         for r_idx, row in enumerate(self.rows):
@@ -1996,6 +2049,7 @@ class MainWindow(QMainWindow):
                 self.table.setItem(r_idx, 0, item)
                 break
         self.on_row_selected()
+        self.update_editorial_status()
 
 
     def on_generate_image(self):
