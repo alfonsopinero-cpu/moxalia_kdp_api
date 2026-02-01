@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
     QWidget,
+    QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QFormLayout,
@@ -32,9 +33,12 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QProgressBar,
+    QFileDialog,
+    QInputDialog,  
+    
 
 )
-from PySide6.QtGui import QIcon, QPixmap, QColor, QBrush, QCursor, QDesktopServices
+from PySide6.QtGui import QIcon, QPixmap, QColor, QBrush, QCursor, QDesktopServices, QAction
 from PySide6.QtCore import QUrl
 
 # =========================
@@ -43,6 +47,7 @@ from PySide6.QtCore import QUrl
 load_dotenv()
 
 IMAGE_RESOLUTIONS = {
+    "Testing (1024 x 1024)": "1024x1024",
     "Working (1024 x 1536)": "1024x1536",
     "Final KDP (2550 x 3300)": "2550x3300",
 }
@@ -56,6 +61,10 @@ OUT_DIR = Path.cwd() / "illustraciones"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 STATE_PATH = Path.cwd() / "book_state.json"
+
+PROJECTS_DIR = Path.cwd() / "projects"
+PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # =========================
 # DATA MODELS
@@ -94,6 +103,18 @@ class IllustrationRow(BaseModel):
     Prompt_core: str
     Prompt_final: str
     Prompt_negativo: str
+    approval_status: str = "pending"  # pending | approved | rejected
+    rejection_reason: str = ""
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+def _safe_slug(name: str) -> str:
+    name = name.strip().lower()
+    name = re.sub(r"[^a-z0-9-_]+", "_", name)
+    name = re.sub(r"_+", "_", name).strip("_")
+    return name or "book"
 
 def load_requirement_file(path: Path) -> dict:
     if not path.exists():
@@ -401,6 +422,7 @@ class GenerateBookWorker(QRunnable):
 
 
 
+
 class GenerateImageWorker(QRunnable):
     def __init__(
         self,
@@ -408,17 +430,20 @@ class GenerateImageWorker(QRunnable):
         row: IllustrationRow,
         image_model: str,
         image_resolution: str,
+        images_dir: Path,
     ):
         super().__init__()
         self.client = client
         self.row = row
         self.image_model = image_model
         self.image_resolution = image_resolution
+        self.images_dir = images_dir
         self.signals = WorkerSignals()
 
     def run(self):
         try:
-            out_path = OUT_DIR / f"{self.row.ID}.png"
+            self.images_dir.mkdir(parents=True, exist_ok=True)
+            out_path = self.images_dir / f"{self.row.ID}.png"
             generate_image_png(
                 self.client,
                 prompt=self.row.Prompt_final,
@@ -426,7 +451,7 @@ class GenerateImageWorker(QRunnable):
                 out_path=out_path,
                 image_model=self.image_model,
                 image_resolution=self.image_resolution,
-                progress_cb=lambda p, m: self.signals.progress.emit(p, m)
+                progress_cb=lambda p, m: self.signals.progress.emit(p, m),
             )
             self.signals.ok.emit(str(out_path))
         except Exception as e:
@@ -506,6 +531,112 @@ class BlockingOverlay(QFrame):
         self.bar.setValue(100)
         self.setVisible(False)
 
+class ImageReviewDialog(QDialog):
+    def __init__(self, parent, row: IllustrationRow, image_path: Path):
+        super().__init__(parent)          # ✅ ESTA LÍNEA ES LA CLAVE
+        self.row = row                   # ✅ para _approve/_reject
+
+        self.setWindowTitle(f"Review image {row.ID}")
+        self.setModal(True)
+
+
+        # Tamaño mínimo pensado para 14" (1920x1200 @150%)
+        self.setMinimumSize(1200, 800)
+        self.resize(1400, 900)   # tamaño inicial razonable
+        self.setSizeGripEnabled(True)
+
+        root = QHBoxLayout(self)
+
+        # =========================
+        # LEFT: IMAGE (MAX SPACE)
+        # =========================
+        left = QVBoxLayout()
+        root.addLayout(left, 3)  # 75% espacio
+
+        self.img_label = QLabel()
+        self.img_label.setAlignment(Qt.AlignCenter)
+        self.img_label.setStyleSheet("background-color: #111;")
+
+        pix = QPixmap(str(image_path))
+        self.img_label.setPixmap(
+            pix.scaled(
+                900, 1200,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+        )
+
+        left.addWidget(self.img_label)
+
+        # =========================
+        # RIGHT: INFO PANEL
+        # =========================
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        root.addLayout(right, 2)  # 25% espacio
+
+        # --- Prompt ---
+        prompt_box = QGroupBox("Prompt (final + negative)")
+        prompt_layout = QVBoxLayout(prompt_box)
+
+        txt_prompt = QPlainTextEdit()
+        txt_prompt.setReadOnly(True)
+        txt_prompt.setPlainText(
+            row.Prompt_final + "\n\n--- NEGATIVE PROMPT ---\n\n" + row.Prompt_negativo
+        )
+        prompt_layout.addWidget(txt_prompt)
+        right.addWidget(prompt_box, 2)
+
+        # --- Editorial text ---
+        text_box = QGroupBox("Inspirational text")
+        text_layout = QVBoxLayout(text_box)
+
+        self.txt_editorial = QPlainTextEdit()
+        self.txt_editorial.setPlainText(row.Comentario_editorial)
+        text_layout.addWidget(self.txt_editorial)
+        right.addWidget(text_box, 1)
+
+        # --- Rejection reason ---
+        self.reject_reason = QLineEdit()
+        self.reject_reason.setPlaceholderText("Reason for rejection (required)")
+        if row.rejection_reason:
+            self.reject_reason.setText(row.rejection_reason)
+        right.addWidget(self.reject_reason)
+
+        # --- Buttons ---
+        btn_layout = QHBoxLayout()
+        self.btn_approve = QPushButton("Approve")
+        self.btn_reject = QPushButton("Reject")
+        self.btn_cancel = QPushButton("Close")
+
+        btn_layout.addWidget(self.btn_approve)
+        btn_layout.addWidget(self.btn_reject)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+
+        right.addLayout(btn_layout)
+
+        # --- Signals ---
+        self.btn_approve.clicked.connect(self._approve)
+        self.btn_reject.clicked.connect(self._reject)
+        self.btn_cancel.clicked.connect(self.reject)
+
+
+    def _approve(self):
+        self.row.approval_status = "approved"
+        self.row.rejection_reason = ""
+        self.accept()
+
+    def _reject(self):
+        reason = self.reject_reason.text().strip()
+        if not reason:
+            QMessageBox.warning(
+                self, "Missing reason", "Please provide a reason for rejection."
+            )
+            return
+        self.row.approval_status = "rejected"
+        self.row.rejection_reason = reason
+        self.accept()
 
 class MainWindow(QMainWindow):
     def get_selected_image_resolution(self) -> str:
@@ -531,6 +662,43 @@ class MainWindow(QMainWindow):
                 data["status"],
             )
 
+    def on_create_new_book(self):   
+        # Caso A: no hay proyecto cargado
+        if self.project_dir is None:
+            self.reset_project_state()
+            return
+
+        # Caso B: hay proyecto cargado
+        reply = QMessageBox.question(
+            self,
+            "Save project?",
+            "There is an open project.\nDo you want to save it before creating a new one?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+        )
+
+        if reply == QMessageBox.Cancel:
+            return
+
+        if reply == QMessageBox.Yes:
+            self.on_save_project()
+            # si sigue existiendo proyecto, algo falló → no continuar
+            if self.project_dir is not None:
+                self.reset_project_state()
+            return
+
+        # reply == No → segunda confirmación
+        confirm = QMessageBox.question(
+            self,
+            "Discard changes?",
+            "All unsaved changes will be lost.\nAre you sure?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+        )
+
+        if confirm == QMessageBox.Yes:
+            self.reset_project_state()
+
+
+
     def _on_req_clicked(self, which: str):
         if which == "img":
             status = self.req_imagenes["status"]
@@ -547,27 +715,34 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         self.overlay.setGeometry(self.rect())
         super().resizeEvent(event)
-    DISPLAY_COLS = ["Image"] + [
+    DISPLAY_COLS = [
+        "Imagen",
         "ID",
-        "Categoria",
-        "Publico",
-        "Pais_Region",
+        "Título",
+        "Público",
+        "País / Región",
         "Monumento",
-        "Main_foco",
-        "Difficulty_block",
-        "Difficulty_D",
-        "Nombre_fichero_editorial",
-        "Nombre_fichero_descargado",
-        "Comentario_editorial",
-        "Prompt_final",
-        "Prompt_negativo",
+        "Foco principal",
+        "Bloque",
+        "Nivel dificultad",
     ]
-    COLS = DISPLAY_COLS[1:]  # For mapping/row dict only
-
+    TABLE_COLUMN_MAP = [
+        ("ID", "ID"),
+        ("Título", "Categoria"),
+        ("Público", "Publico"),
+        ("País / Región", "Pais_Region"),
+        ("Monumento", "Monumento"),
+        ("Foco principal", "Main_foco"),
+        ("Bloque", "Difficulty_block"),
+        ("Nivel dificultad", "Difficulty_D"),
+    ]
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("KDP Coloring Book Builder (MVP)")
-        self.resize(1400, 800)
+        self.resize(1400, 900)              # tamaño inicial razonable
+        self.setMinimumSize(1280, 800)      # 👈 clave para pantallas 14"
+
 
         self.client = OpenAI()
         self.pool = QThreadPool.globalInstance()
@@ -576,7 +751,8 @@ class MainWindow(QMainWindow):
         self.overlay.hide()
         self.req_imagenes = load_requirement_file(REQ_IMAGENES_PATH)
         self.req_texto = load_requirement_file(REQ_TEXTO_PATH)
-
+        self.project_dir: Optional[Path] = None
+        self.images_dir: Optional[Path] = None
 
         self.rows: List[IllustrationRow] = []
         self.current_spec: Optional[BookSpec] = None
@@ -594,6 +770,36 @@ class MainWindow(QMainWindow):
             "gpt-image-1.5",
         ]
 
+        # ----- MENU BAR -----
+        menubar = self.menuBar()
+        archivo_menu = menubar.addMenu("Archivo")
+        acciones_menu = menubar.addMenu("Acciones")
+
+        # Archivo actions
+        self.action_crear_nuevo_libro = QAction("Crear nuevo libro", self)
+        self.action_crear_nuevo_libro.triggered.connect(self.on_create_new_book)
+        archivo_menu.addAction(self.action_crear_nuevo_libro)
+
+        self.action_abrir_libro = QAction("Abrir libro existente", self)
+        self.action_abrir_libro.triggered.connect(self.on_open_existing_book)
+        archivo_menu.addAction(self.action_abrir_libro)
+
+        self.action_guardar_proyecto = QAction("Guardar proyecto", self)
+        self.action_guardar_proyecto.triggered.connect(self.on_save_project)
+        archivo_menu.addAction(self.action_guardar_proyecto)
+
+        # Acciones actions
+        self.action_generar_libro = QAction("Generar libro", self)
+        self.action_generar_libro.setEnabled(False)
+        self.action_generar_libro.triggered.connect(self.on_generate_book)
+        acciones_menu.addAction(self.action_generar_libro)
+
+        self.action_generar_imagen = QAction("Generar imagen seleccionada", self)
+        self.action_generar_imagen.setEnabled(False)
+        self.action_generar_imagen.triggered.connect(self.on_generate_image)
+        acciones_menu.addAction(self.action_generar_imagen)
+
+        # ----- CENTRAL UI -----
         root = QWidget()
         self.setCentralWidget(root)
         main = QHBoxLayout(root)
@@ -601,13 +807,36 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
         main.addLayout(left, 3)
 
+        project_box = QGroupBox("Project")
+        left.addWidget(project_box)
+        pvl = QVBoxLayout(project_box)
+
+        self.lbl_project = QLabel("No book loaded")
+        pvl.addWidget(self.lbl_project)
+
+        pbtns = QHBoxLayout()
+        pvl.addLayout(pbtns)
+
+        self.btn_create_book = QPushButton("Create new book")
+        self.btn_open_book = QPushButton("Open existing book")  # will implement later
+        pbtns.addWidget(self.btn_create_book)
+        pbtns.addWidget(self.btn_open_book)
+
+        # Connect (keep connections for future code compatibility, but hide)
+        self.btn_create_book.clicked.connect(self.on_create_new_book)
+        self.btn_open_book.clicked.connect(self.on_open_existing_book)
+
+        self.btn_create_book.hide()
+        self.btn_open_book.hide()
+
         right = QVBoxLayout()
         main.addLayout(right, 2)
-
+        
         form_box = QGroupBox("Book inputs")
         req_box = QGroupBox("Editorial requirements")
         left.addWidget(req_box)
-        req_layout = QVBoxLayout(req_box)
+        req_layout = QHBoxLayout(req_box)
+
 
         self.lbl_req_img = QLabel()
         self.lbl_req_txt = QLabel()
@@ -627,9 +856,14 @@ class MainWindow(QMainWindow):
         req_layout.addWidget(self.lbl_req_img)
         req_layout.addWidget(self.lbl_req_txt)
 
-
         left.addWidget(form_box)
-        form = QFormLayout(form_box)
+        form_layout = QHBoxLayout(form_box)
+
+        form_left = QFormLayout()
+        form_right = QFormLayout()
+
+        form_layout.addLayout(form_left)
+        form_layout.addLayout(form_right)
 
         self.ed_book_id = QLineEdit()
         self.cb_publico = QComboBox()
@@ -662,12 +896,12 @@ class MainWindow(QMainWindow):
         idx_text = self.cb_text_model.findText(DEFAULT_TEXT_MODEL)
         if idx_text != -1:
             self.cb_text_model.setCurrentIndex(idx_text)
-        form.addRow("Text model", self.cb_text_model)
+        form_right.addRow("Text model", self.cb_text_model)
 
         self.cb_image_resolution = QComboBox()
         self.cb_image_resolution.addItems(IMAGE_RESOLUTIONS.keys())
-        self.cb_image_resolution.setCurrentText("Working (1024 x 1536)")
-        form.addRow("Image resolution", self.cb_image_resolution)
+        self.cb_image_resolution.setCurrentText("Testing (1024 x 1024)")
+        form_right.addRow("Image resolution", self.cb_image_resolution)
 
         self.cb_image_model = QComboBox()
         for m in self.available_image_models:
@@ -675,23 +909,24 @@ class MainWindow(QMainWindow):
         idx_image = self.cb_image_model.findText(DEFAULT_IMAGE_MODEL)
         if idx_image != -1:
             self.cb_image_model.setCurrentIndex(idx_image)
-        form.addRow("Image model", self.cb_image_model)
-        form.addRow("Book ID", self.ed_book_id)
-        form.addRow("Publico", self.cb_publico)
-        form.addRow("Tema", self.ed_tema)
-        form.addRow("Alcance geográfico", self.ed_alcance)
-        form.addRow("Tipo de imágenes", self.ed_tipo)
-        form.addRow("Número de imágenes", self.sp_num)
-        form.addRow("Tamaño libro", self.ed_tamano)
-        form.addRow("Aspect ratio", self.ed_aspect)
-        form.addRow("Dificultad inicial", self.cb_dif_ini)
-        form.addRow("Dificultad final", self.cb_dif_fin)
-        form.addRow("Idioma texto", self.cb_idioma)
+        form_right.addRow("Image model", self.cb_image_model)
+        form_left.addRow("Book name", self.ed_book_id)
+        form_left.addRow("Publico", self.cb_publico)
+        form_left.addRow("Tema", self.ed_tema)
+        form_left.addRow("Alcance geográfico", self.ed_alcance)
+        form_left.addRow("Tipo de imágenes", self.ed_tipo)
+        form_left.addRow("Número de imágenes", self.sp_num)
+        form_left.addRow("Tamaño libro", self.ed_tamano)
+        form_left.addRow("Aspect ratio", self.ed_aspect)
+        form_right.addRow("Dificultad inicial", self.cb_dif_ini)
+        form_right.addRow("Dificultad final", self.cb_dif_fin)
+        form_right.addRow("Idioma texto", self.cb_idioma)
 
         self.btn_generate_book = QPushButton("Generate book")
         self.btn_generate_book.setEnabled(False)
         self.btn_generate_book.clicked.connect(self.on_generate_book)
         left.addWidget(self.btn_generate_book)
+        self.btn_generate_book.hide()
 
         self.lbl_status = QLabel("")
         left.addWidget(self.lbl_status)
@@ -699,11 +934,18 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(0, len(self.DISPLAY_COLS))
         self.table.setHorizontalHeaderLabels(self.DISPLAY_COLS)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        difficulty_col = self.DISPLAY_COLS.index("Nivel dificultad")
+        self.table.horizontalHeader().setSectionResizeMode(
+            difficulty_col, QHeaderView.Fixed
+        )
+        self.table.setColumnWidth(difficulty_col, 90)
+
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self.on_row_selected)
         self.table.cellClicked.connect(self.on_table_cell_clicked)
+        self.table.cellDoubleClicked.connect(self.on_table_double_clicked)
         left.addWidget(self.table, 1)
 
         # Create icons for clickable/disabled
@@ -717,26 +959,57 @@ class MainWindow(QMainWindow):
         self._icon_disabled = QIcon(self._icon_gray_pix)
 
         right_box = QGroupBox("Selected illustration")
+        right_box.setMinimumWidth(420)
+        right_box.setMaximumWidth(420)
         right.addWidget(right_box)
         rvl = QVBoxLayout(right_box)
 
-        self.sel_title = QLabel("No row selected")
-        self.sel_title.setWordWrap(True)
-        rvl.addWidget(self.sel_title)
+
+        # --- PROMPT BLOCK ---
+        prompt_box = QGroupBox("Prompt (final + negative)")
+        prompt_layout = QVBoxLayout(prompt_box)
 
         self.txt_prompt = QPlainTextEdit()
         self.txt_prompt.setReadOnly(True)
-        rvl.addWidget(self.txt_prompt, 2)
+        prompt_layout.addWidget(self.txt_prompt)
+
+        rvl.addWidget(prompt_box, 2)
+
+        # --- EDITORIAL TEXT BLOCK ---
+        editorial_box = QGroupBox("Inspirational text")
+        editorial_layout = QVBoxLayout(editorial_box)
 
         self.txt_editorial = QPlainTextEdit()
         self.txt_editorial.setReadOnly(True)
-        rvl.addWidget(self.txt_editorial, 1)
+        editorial_layout.addWidget(self.txt_editorial)
+
+        rvl.addWidget(editorial_box, 1)
+
+        # --- IMAGE PREVIEW BLOCK ---
+        image_box = QGroupBox("Image preview")
+        image_layout = QVBoxLayout(image_box)
+
+        self.lbl_image_preview = QLabel("No image generated")
+        self.lbl_image_preview.setAlignment(Qt.AlignCenter)
+        self.lbl_image_preview.setMinimumHeight(260)
+        self.lbl_image_preview.setStyleSheet("""
+            QLabel {
+                background-color: #e0e0e0;
+                color: #555;
+                border: 1px dashed #aaa;
+            }
+        """)
+        self.lbl_image_preview.setScaledContents(True)
+
+        image_layout.addWidget(self.lbl_image_preview)
+        rvl.addWidget(image_box, 3)
 
 
         self.btn_generate_image = QPushButton("Generate image for selected row")
         self.btn_generate_image.setEnabled(False)
         self.btn_generate_image.clicked.connect(self.on_generate_image)
         rvl.addWidget(self.btn_generate_image)
+        self.btn_generate_image.hide()
 
         self.lbl_image_status = QLabel("")
         rvl.addWidget(self.lbl_image_status)
@@ -745,6 +1018,326 @@ class MainWindow(QMainWindow):
         self.ed_tema.textChanged.connect(self.validate_form)
         self.ed_alcance.textChanged.connect(self.validate_form)
         self.validate_form()
+
+    # ---- Menu action enablement helpers ----
+    def validate_form(self):
+        has_project = self.project_dir is not None
+        ok = (
+            self.ed_book_id.text().strip() != ""
+            and self.ed_tema.text().strip() != ""
+            and self.ed_alcance.text().strip() != ""
+        )
+        self.btn_generate_book.setEnabled(ok)
+        # Sync menu action enable state:
+        if hasattr(self, "action_generar_libro"):
+            self.action_generar_libro.setEnabled(ok)
+
+    def on_row_selected(self):
+        sel = self.table.selectionModel().selectedRows()
+        ok = bool(sel)
+        self.btn_generate_image.setEnabled(ok)
+        if hasattr(self, "action_generar_imagen"):
+            self.action_generar_imagen.setEnabled(ok)
+        # You may have other logic here regarding updating selection text, etc.
+        if not sel:
+            self.txt_prompt.clear()
+            self.txt_editorial.clear()
+            self.lbl_image_preview.setText("No image generated")
+            self.lbl_image_preview.setPixmap(QPixmap())
+            return
+
+        row = self.rows[sel[0].row()]
+
+        # Prompt completo
+        self.txt_prompt.setPlainText(
+            row.Prompt_final.strip() + "\n\n--- NEGATIVE PROMPT ---\n\n" + row.Prompt_negativo.strip()
+        )
+
+        # Texto editorial
+        self.txt_editorial.setPlainText(row.Comentario_editorial.strip())
+
+        # Imagen
+        img_base = self.images_dir if self.images_dir else OUT_DIR
+        img_path = img_base / f"{row.ID}.png"
+
+        if img_path.exists():
+            pix = QPixmap(str(img_path))
+            self.lbl_image_preview.setPixmap(pix)
+            self.lbl_image_preview.setStyleSheet("background-color: black;")
+        else:
+            self.lbl_image_preview.setPixmap(QPixmap())
+            self.lbl_image_preview.setText("No image generated")
+            self.lbl_image_preview.setStyleSheet("""
+                QLabel {
+                    background-color: #e0e0e0;
+                    color: #555;
+                    border: 1px dashed #aaa;
+                }
+            """)
+
+    # ----------------- NEW: Open/Load Project Logic ---------------------
+    def on_open_existing_book(self):
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        dir_path = QFileDialog.getExistingDirectory(self, "Selecciona carpeta del libro", str(PROJECTS_DIR))
+        if not dir_path:
+            return
+
+        project_dir = Path(dir_path)
+        book_json = project_dir / "book.json"
+        illustrations_json = project_dir / "illustrations.json"
+        images_dir = project_dir / "images"
+
+        # Validation
+        if not book_json.exists():
+            QMessageBox.critical(self, "Error", f"Falta book.json en:\n{project_dir}")
+            return
+        if not illustrations_json.exists():
+            QMessageBox.critical(self, "Error", f"Falta illustrations.json en:\n{project_dir}")
+            return
+        if not images_dir.exists():
+            try:
+                images_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"No se pudo crear images/:\n{e}")
+                return
+
+        self.load_project(project_dir)
+
+    def load_project(self, project_dir):
+        from PySide6.QtWidgets import QMessageBox
+
+        import json
+
+        book_json_p = project_dir / "book.json"
+        illus_json_p = project_dir / "illustrations.json"
+        images_dir = project_dir / "images"
+
+        # Parse book.json
+        try:
+            with book_json_p.open("r", encoding="utf-8") as f:
+                book_data = json.load(f)
+                spec = book_data.get("spec", {})
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo leer book.json:\n{e}")
+            return
+
+        # Restore book form fields
+        try:
+            # Handle missing keys gracefully if needed
+            self.ed_book_id.setText(spec.get("book_id", ""))
+            self.cb_publico.setCurrentText(spec.get("publico", "Adultos"))
+            self.ed_tema.setText(spec.get("tema", ""))
+            self.ed_alcance.setText(spec.get("alcance_geografico", ""))
+            self.ed_tipo.setText(spec.get("tipo_imagenes", ""))
+            self.sp_num.setValue(spec.get("numero_imagenes", 0))
+            self.ed_tamano.setText(spec.get("tamano_libro", "8.5x11"))
+            self.ed_aspect.setText(spec.get("aspect_ratio", "4:5"))
+            self.cb_dif_ini.setCurrentText(spec.get("dificultad_inicial", "Bajo"))
+            self.cb_dif_fin.setCurrentText(spec.get("dificultad_final", "Alto"))
+            self.cb_idioma.setCurrentText(spec.get("idioma_texto", "es"))
+
+
+            # Text/image model
+            text_model = spec.get("text_model", DEFAULT_TEXT_MODEL)
+            idx = self.cb_text_model.findText(text_model)
+            if idx != -1:
+                self.cb_text_model.setCurrentIndex(idx)
+            else:
+                self.cb_text_model.setCurrentIndex(0)
+
+            image_model = spec.get("image_model", DEFAULT_IMAGE_MODEL)
+            idx = self.cb_image_model.findText(image_model)
+            if idx != -1:
+                self.cb_image_model.setCurrentIndex(idx)
+            else:
+                self.cb_image_model.setCurrentIndex(0)
+
+            image_resolution = spec.get("image_resolution", "Testing (1024 x 1024)")
+            idx = self.cb_image_resolution.findText(image_resolution)
+            if idx != -1:
+                self.cb_image_resolution.setCurrentIndex(idx)
+            else:
+                self.cb_image_resolution.setCurrentIndex(0)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error restaurando campos de book.json:\n{e}")
+            return
+
+        # Set directories
+        self.project_dir = project_dir
+        self.images_dir = images_dir
+
+        # Parse illustrations.json and repopulate table/rows
+        try:
+            with illus_json_p.open("r", encoding="utf-8") as f:
+                illus_data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo leer illustrations.json:\n{e}")
+            return
+
+        rows_raw = illus_data.get("illustrations", [])
+        self.rows = []
+        self.table.setRowCount(0)
+        from pydantic import ValidationError
+        self.rows = []
+        for row_data in rows_raw:
+            try:
+                row = IllustrationRow(**row_data)
+
+                # Backward compatibility for old projects
+                if not getattr(row, "approval_status", None):
+                    row.approval_status = "pending"
+
+                if not hasattr(row, "rejection_reason"):
+                    row.rejection_reason = ""
+
+                self.rows.append(row)
+
+            except ValidationError as e:
+                QMessageBox.critical(
+                    self,
+                    "Invalid illustration data",
+                    f"Error loading illustration:\n{e}"
+                )
+                return
+
+
+
+            row_idx = self.table.rowCount()
+            self.table.insertRow(row_idx)
+            # Assuming columns match self.DISPLAY_COLS (first col is image status)
+            # Set icon for image
+            image_id = row.ID
+            img_path = self.images_dir / f"{image_id}.png"
+            icon = self._icon_ok if img_path.exists() else self._icon_disabled
+            img_item = QTableWidgetItem()
+            img_item.setIcon(icon)
+            self.table.setItem(row_idx, 0, img_item)
+            # Fill rest of columns from row dict
+            for c_idx, (_, attr) in enumerate(self.TABLE_COLUMN_MAP, start=1):
+                value = getattr(row, attr, "")
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() ^ Qt.ItemIsEditable)
+                self.table.setItem(row_idx, c_idx, item)
+            self._apply_row_color(row_idx, row.approval_status)
+
+
+        # Update UI: project label, clear selection, reset editors
+        slug = project_dir.name
+        self.lbl_project.setText(f"Current book: {slug}\n{project_dir}")
+
+        self.table.clearSelection()
+        self.txt_prompt.clear()
+        self.txt_editorial.clear()
+        # Status labels
+        self.lbl_status.setText("")
+        self.lbl_image_status.setText("")
+
+        self.validate_form()
+        self.on_row_selected()
+        self.validate_form()
+        self.action_generar_libro.setEnabled(True)
+
+    def on_save_project(self):
+        # 1) Validar formulario
+        try:
+            spec = self.get_spec()
+        except ValidationError as e:
+            QMessageBox.critical(self, "Invalid inputs", str(e))
+            return
+
+        # 2) Si NO existe proyecto → pedir carpeta
+        if self.project_dir is None:
+            base_dir = QFileDialog.getExistingDirectory(
+                self, "Select folder to save the project"
+            )
+            if not base_dir:
+                return
+
+            slug = _safe_slug(spec.book_id)
+            project_dir = Path(base_dir) / slug
+            images_dir = project_dir / "images"
+
+            if project_dir.exists():
+                QMessageBox.critical(
+                    self,
+                    "Folder exists",
+                    f"Project folder already exists:\n{project_dir}",
+                )
+                return
+
+            project_dir.mkdir(parents=True, exist_ok=True)
+            images_dir.mkdir(parents=True, exist_ok=True)
+
+            self.project_dir = project_dir
+            self.images_dir = images_dir
+
+        # 3) Guardar book.json
+        (self.project_dir / "book.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.2",
+                    "book_id": spec.book_id,
+                    "spec": spec.model_dump(),
+                    "image_settings": {
+                        "image_model": self.get_selected_image_model(),
+                        "image_resolution": self.get_selected_image_resolution(),
+                    },
+                    "text_settings": {
+                        "text_model": self.get_selected_text_model(),
+                    },
+                    "last_modified_at": _utc_now_iso(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        # 4) Guardar illustrations.json
+        (self.project_dir / "illustrations.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.2",
+                    "illustrations": [r.model_dump() for r in self.rows],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        self.lbl_project.setText(
+            f"Current book: {self.project_dir.name}\n{self.project_dir}"
+        )
+
+        QMessageBox.information(self, "Saved", "Project saved successfully.")
+
+    def reset_project_state(self):
+        self.project_dir = None
+        self.images_dir = None
+        self.rows = []
+
+        self.lbl_project.setText("No book loaded")
+
+        self.ed_book_id.clear()
+        self.ed_tema.clear()
+        self.ed_alcance.clear()
+        self.ed_tipo.setText("Monumentos y paisajes")
+        self.sp_num.setValue(50)
+
+        self.table.setRowCount(0)
+        self.table.clearSelection()
+
+        self.txt_prompt.clear()
+        self.txt_editorial.clear()
+
+        self.lbl_status.setText("")
+        self.lbl_image_status.setText("")
+
+        self.validate_form()
+
 
     def draw_icon_image_ok(self):
         """Draw a green eye or document icon for image exists."""
@@ -790,14 +1383,8 @@ class MainWindow(QMainWindow):
         else:
             label.setText(f"🔴 {name}: file not found")
 
-    def validate_form(self):
-        ok = (
-            self.ed_book_id.text().strip() != ""
-            and self.ed_tema.text().strip() != ""
-            and self.ed_alcance.text().strip() != ""
-            and self.sp_num.value() > 0
-        )
-        self.btn_generate_book.setEnabled(ok)
+
+
 
     def get_spec(self) -> BookSpec:
         return BookSpec(
@@ -823,9 +1410,43 @@ class MainWindow(QMainWindow):
     def on_generate_book(self):
         try:
             spec = self.get_spec()
+             # Advertir si ya existe contenido generado
+            has_rows = bool(self.rows)
+            has_images = self.images_dir and any(self.images_dir.glob("*.png"))
+
+            if has_rows or has_images:
+                reply = QMessageBox.warning(
+                    self,
+                    "Book already generated",
+                    "This book already has generated content (table or images).\n\n"
+                    "If you continue, all existing illustrations and images will be deleted.\n\n"
+                    "Do you want to continue?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
+                # Reset contenido existente
+                self.rows = []
+                self.table.setRowCount(0)
+
+                if self.images_dir and self.images_dir.exists():
+                    for p in self.images_dir.glob("*.png"):
+                        p.unlink(missing_ok=True)
+
         except ValidationError as e:
             QMessageBox.critical(self, "Invalid inputs", str(e))
             return
+        # 1) Comprobar que hay un libro cargado
+        if self.project_dir is None:
+            QMessageBox .critical(
+                self,
+                "No book loaded",
+                "Create or open a book first.",
+            )
+            return
+
+        # 2) Comprobar que los requerimientos están cargados
         if (
             self.req_imagenes["status"] != "ok"
             or self.req_texto["status"] != "ok"
@@ -837,6 +1458,7 @@ class MainWindow(QMainWindow):
                 "before generating a book.",
             )
             return
+
         self.btn_generate_book.setEnabled(False)
         text_model = self.get_selected_text_model()
         self.lbl_status.setText("Generating book table via OpenAI...")
@@ -852,6 +1474,32 @@ class MainWindow(QMainWindow):
         worker.signals.err.connect(self.on_worker_error)
         worker.signals.progress.connect(self.overlay.update)
         self.pool.start(worker)
+    def _apply_row_color(self, row_idx: int, status: str):
+        if status == "approved":
+            bg_color = QColor("#2f6f4e")   # verde oscuro elegante
+            fg_color = QColor("#ffffff")   # texto blanco
+        elif status == "rejected":
+            bg_color = QColor("#7a2e2e")   # rojo oscuro elegante
+            fg_color = QColor("#ffffff")   # texto blanco
+        else:
+            bg_color = None
+            fg_color = None
+
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row_idx, col)
+            if not item:
+                continue
+
+            if bg_color:
+                item.setBackground(QBrush(bg_color))
+                item.setForeground(QBrush(fg_color))
+            else:
+                item.setBackground(QBrush())
+                item.setForeground(QBrush())  # vuelve al color por defecto
+
+
+
+
 
     def on_book_generated(self, rows: List[IllustrationRow]):
         self.overlay.stop()
@@ -861,12 +1509,15 @@ class MainWindow(QMainWindow):
         # Image icons go in column 0
         for r_idx, row in enumerate(rows):
             d = row.model_dump()
-            img_path = OUT_DIR / f"{row.ID}.png"
+            img_base = self.images_dir if self.images_dir is not None else OUT_DIR
+            img_path = img_base / f"{row.ID}.png"
+
             image_exists = img_path.exists()
             icon_item = QTableWidgetItem()
             if image_exists:
                 icon_item.setIcon(self._icon_ok)
-                icon_item.setToolTip(f"Click to open {img_path.name}")
+                icon_item.setToolTip("Image generated")
+
                 # Set as clickable (normal enabled flags)
                 icon_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             else:
@@ -879,12 +1530,47 @@ class MainWindow(QMainWindow):
             icon_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(r_idx, 0, icon_item)
 
-            for c_idx, key in enumerate(self.COLS):
-                item = QTableWidgetItem(str(d.get(key, "")))
+            for c_idx, (_, attr) in enumerate(self.TABLE_COLUMN_MAP, start=1):
+                value = getattr(row, attr, "")
+                item = QTableWidgetItem(str(value))
                 item.setFlags(item.flags() ^ Qt.ItemIsEditable)
-                self.table.setItem(r_idx, c_idx+1, item)
+                self.table.setItem(r_idx, c_idx, item)
+            self._apply_row_color(r_idx, row.approval_status)
+
 
         self.lbl_status.setText(f"Book generated: {len(rows)} rows")
+        if self.project_dir is not None:
+            spec = self.get_spec()
+            (self.project_dir / "book.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.2",
+                        "book_id": spec.book_id,
+                        "spec": spec.model_dump(),
+                        "image_settings": {
+                            "image_model": self.get_selected_image_model(),
+                            "image_resolution": self.get_selected_image_resolution(),
+                        },
+                        "text_settings": {"text_model": self.get_selected_text_model()},
+                        "last_modified_at": _utc_now_iso(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            (self.project_dir / "illustrations.json").write_text(
+                json.dumps(
+                    {"schema_version": "1.2", "illustrations": [r.model_dump() for r in self.rows]},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+
+
     def on_image_generated(self, out_path: str):
         self.overlay.stop()
         self.btn_generate_image.setEnabled(True)
@@ -899,28 +1585,8 @@ class MainWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r_idx, 0, item)
                 break
-    def on_row_selected(self):
-        sel = self.table.selectionModel().selectedRows()
-        if not sel:
-            return
-        # Our data rows start at column 1 (after "Image" column)
-        row_idx = sel[0].row()
-        row = self.rows[row_idx]
-        self.sel_title.setText(f"Row {row_idx+1}: {row.ID} - {row.Categoria} - {row.Pais_Region}")
-        combined_prompt = (
-            "=== IMAGE PROMPT ===\n\n"
-            f"{row.Prompt_final}\n\n"
-            "--- NEGATIVE CONSTRAINTS ---\n"
-            f"{row.Prompt_negativo}"
-        )
-        self.txt_prompt.setPlainText(combined_prompt)
+        self.on_row_selected()
 
-        self.txt_editorial.setPlainText(
-            "=== INSPIRATIONAL TEXT ===\n\n"
-            f"{row.Comentario_editorial}"
-        )
-
-        self.btn_generate_image.setEnabled(True)
 
     def on_generate_image(self):
         sel = self.table.selectionModel().selectedRows()
@@ -928,16 +1594,28 @@ class MainWindow(QMainWindow):
         if not sel:
             return
         row = self.rows[sel[0].row()]
-
+        if row.approval_status == "approved":
+            reply = QMessageBox.warning(
+                self,
+                "Image already approved",
+                "This image is already approved.\n\n"
+                "Regenerating it will discard the approved image.\n\n"
+                "Do you want to continue?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+            )
+            if reply != QMessageBox.Yes:
+                return
         image_model = self.get_selected_image_model()
         self.overlay.start_indeterminate("🎨 AI is generating the image…")
         image_resolution = self.get_selected_image_resolution()
 
+       
         worker = GenerateImageWorker(
             self.client,
             row,
             image_model,
             image_resolution,
+            self.images_dir,
         )
         worker.signals.progress.connect(self.overlay.update)
         worker.signals.ok.connect(self.on_image_generated)
@@ -950,17 +1628,38 @@ class MainWindow(QMainWindow):
         self.btn_generate_image.setEnabled(True)
         QMessageBox.critical(self, "Error", msg)
     def on_table_cell_clicked(self, row_idx, col_idx):
-        # Only respond to the icon column (col_idx == 0)
-        if col_idx != 0:
-            return
-        # Defensive: row index should be valid and row exists
+        return
+
+    def on_table_double_clicked(self, row_idx, col_idx):
         if not (0 <= row_idx < len(self.rows)):
             return
-        illustration_row = self.rows[row_idx]
-        img_path = OUT_DIR / f"{illustration_row.ID}.png"
-        if img_path.exists():
-            # Open with default app
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(img_path)))
+
+        row = self.rows[row_idx]
+        img_base = self.images_dir if self.images_dir else OUT_DIR
+        img_path = img_base / f"{row.ID}.png"
+
+        if not img_path.exists():
+            reply = QMessageBox.question(
+                self,
+                "Generate image",
+                "This image has not been generated yet.\nDo you want to generate it now?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self.table.selectRow(row_idx)
+                self.on_generate_image()
+            return
+
+        row = self.rows[row_idx]
+        img_path = self.images_dir / f"{row.ID}.png"
+
+        dlg = ImageReviewDialog(self, row, img_path)
+        if dlg.exec():
+            self._apply_row_color(row_idx, row.approval_status)
+            self.on_save_project()
+
+
+
 
 def main():
     if not os.getenv("OPENAI_API_KEY"):
