@@ -59,6 +59,30 @@ REQ_TEXTO_PATH = Path.cwd() / "requerimientos_texto.txt"
 DEFAULT_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini")
 DEFAULT_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5")
 
+GLOBAL_POSITIVE_GUARDRAILS = """
+CRITICAL OUTPUT CONSTRAINTS (NON-NEGOTIABLE)
+- Black-and-white coloring book line art only.
+- Background MUST be pure white (#FFFFFF) and remain uninked.
+- Do NOT invert colors. Do NOT fill the background. No black background.
+- Do NOT draw any rectangular border/frame around the page.
+- Composition must reach the edges naturally (cropping), but WITHOUT a border line.
+- Background must remain EMPTY and UNINKED.
+- White background means NO ink at all in background areas.
+- Any pixel not belonging to line art must stay white.
+- The drawing may be cropped by page edges, but NO line may run parallel to all four edges.
+- Page edges are NOT objects and must NOT be outlined.
+""".strip()
+
+GLOBAL_NEGATIVE_GUARDRAILS = """
+black background, dark background, inverted colors, negative space inversion,
+background fill, solid fill, large black areas, silhouettes,
+frame, border, outline border, page border,outer contour, page outline, edge line, bounding box, crop frame, rectangular frame, postcard frame, margin box, vignette,
+grayscale, shading, gradients, textures, cross-hatching,
+text, letters, numbers, logos, watermark, signature
+filled background, inked background, background shading, background texture
+""".strip()
+
+
 OUT_DIR = Path.cwd() / "illustraciones"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -156,6 +180,19 @@ def build_prompt_final(
         "Higher difficulty means MORE distinct drawable elements.\n"
         "Increase the number of architectural sub-elements, foreground elements, and mid-ground details with difficulty.\n"
         "Difficulty must be visible at first glance when comparing pages.\n"
+        "COMPLEXITY ENFORCEMENT (MANDATORY)\n"
+        f"Target distinct drawable elements (approx.): {"
+        f"8-14" if row.Difficulty_D <= 25 else
+        f"18-28" if row.Difficulty_D <= 50 else
+        f"35-55" if row.Difficulty_D <= 75 else
+        f"60-90"
+        f"} distinct drawable elements.\n"
+        "Each element must be individually colorable and visually separable.\n"
+        "Failure to clearly differentiate difficulty levels is a rejection criterion.\n\n"
+        "Elements include: windows/arches/columns, bricks/tiles, railings, foliage clusters, street objects, steps, foreground objects.\n"
+        "Low difficulty MUST look sparse with large open areas.\n"
+        "High difficulty MUST look dense with many small distinct elements.\n"
+
         "SCENE DESCRIPTION\n"
         f"{row.Prompt_core}"
     ).strip()
@@ -366,6 +403,48 @@ def generate_image_png(
     out_path.write_bytes(base64.b64decode(b64))
     if progress_cb:
         progress_cb(100, "Image ready")
+def qc_detect_black_bg_or_frame(png_path: Path) -> list[str]:
+    from PIL import Image
+    img = Image.open(png_path).convert("RGB")
+    w, h = img.size
+    px = img.load()
+
+    issues = []
+
+    # --- check corners for non-white background (simple but effective) ---
+    corners = [
+        (5, 5), (w - 6, 5), (5, h - 6), (w - 6, h - 6)
+    ]
+    for (x, y) in corners:
+        r, g, b = px[x, y]
+        if r < 240 or g < 240 or b < 240:
+            issues.append("Background is not pure white (corner pixels are dark).")
+            break
+
+    # --- check for rectangular border/frame: dark pixels along all 4 edges ---
+    def edge_dark_ratio(samples):
+        dark = 0
+        for (x, y) in samples:
+            r, g, b = px[x, y]
+            if r < 80 and g < 80 and b < 80:
+                dark += 1
+        return dark / max(1, len(samples))
+
+    step = max(1, min(w, h) // 200)
+    top = [(x, 2) for x in range(0, w, step)]
+    bottom = [(x, h - 3) for x in range(0, w, step)]
+    left = [(2, y) for y in range(0, h, step)]
+    right = [(w - 3, y) for y in range(0, h, step)]
+
+    if (
+        edge_dark_ratio(top) > 0.35 and
+        edge_dark_ratio(bottom) > 0.35 and
+        edge_dark_ratio(left) > 0.35 and
+        edge_dark_ratio(right) > 0.35
+    ):
+        issues.append("Detected a rectangular border/frame (dark pixels on all edges).")
+
+    return issues
 
 # =========================
 # STATE I/O
@@ -450,8 +529,14 @@ class GenerateImageWorker(QRunnable):
             out_path = self.images_dir / f"{self.row.ID}.png"
 
             # --- BASE PROMPTS ---
-            prompt = self.row.Prompt_final
-            negative = self.row.Prompt_negativo
+            prompt = (
+                "PURE WHITE BACKGROUND. BLACK INK LINE ART ONLY. NO BACKGROUND FILL.\n\n"
+                f"{GLOBAL_POSITIVE_GUARDRAILS}\n\n"
+                f"{self.row.Prompt_final}"
+            )
+
+            negative = f"{self.row.Prompt_negativo}\n\n{GLOBAL_NEGATIVE_GUARDRAILS}"
+
 
             # --- A4.4: Inject rejection reason if regenerating ---
             if (
@@ -479,6 +564,23 @@ class GenerateImageWorker(QRunnable):
                 image_resolution=self.image_resolution,
                 progress_cb=lambda p, m: self.signals.progress.emit(p, m),
             )
+
+            issues = qc_detect_black_bg_or_frame(out_path)
+            if issues:
+                # auto-reject + delete bad image so it remains pending
+                self.row.approval_status = "rejected"
+                auto_reason = "[AUTO-QC]\n" + "\n".join(f"- {x}" for x in issues)
+                if self.row.rejection_reason.strip():
+                    self.row.rejection_reason = f"{auto_reason}\n\n{self.row.rejection_reason}".strip()
+                else:
+                    self.row.rejection_reason = auto_reason
+
+                try:
+                    out_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+                raise RuntimeError("Auto-QC failed: " + " | ".join(issues))
 
             self.signals.ok.emit(str(out_path))
 

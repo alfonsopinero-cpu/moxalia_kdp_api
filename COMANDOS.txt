@@ -6,6 +6,13 @@ python main.py
 
 COMANDOS GIT
 
+git log --oneline --decorate --graph --all
+git show <hash>
+git log --oneline --follow main.py
+git blame main.py
+
+
+
 0️⃣ Comprobaciones rápidas (30 segundos, recomendado)
         git status
     Verifica:

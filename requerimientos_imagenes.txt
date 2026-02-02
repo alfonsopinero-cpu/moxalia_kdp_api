@@ -105,3 +105,9 @@ An image is VALID only if:
 CORE PRINCIPLE
 We do not draw monuments.
 We draw scenes where the reader ENTERS the place.
+
+ADDITIONAL HARD RULES (NON-NEGOTIABLE)
+- NEVER draw a rectangular frame/border around the page.
+- NEVER add vignette, inner frame, photo frame, postcard border, margin box, or outline rectangle.
+- The scene may be cropped by the page edges, but NO BORDER LINE is allowed.
+- Background must stay pure white. Never invert colors. Never fill background (no solid black areas).
