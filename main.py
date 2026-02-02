@@ -591,6 +591,8 @@ class ImageReviewDialog(QDialog):
         from PySide6.QtWidgets import QScrollArea
         self.parent_window = parent
         self.current_index = start_index
+        self.read_only = bool(self.parent_window.editorial_frozen)
+
               
         super().__init__(parent)   
         self.setWindowFlags(
@@ -651,6 +653,23 @@ class ImageReviewDialog(QDialog):
         self.lbl_index = QLabel()
         nav.addWidget(self.lbl_index)
         left.addLayout(nav)
+        # --- Read-only banner (visible, not just disabled buttons) ---
+        self.lbl_readonly = QLabel()
+        self.lbl_readonly.setAlignment(Qt.AlignCenter)
+        self.lbl_readonly.setStyleSheet("""
+            QLabel {
+                background-color: #f2f2f2;
+                color: #333;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: bold;
+            }
+        """)
+
+        if self.read_only:
+            self.lbl_readonly.setText("🔒 Book closed — review is read-only")
+            left.addWidget(self.lbl_readonly)
 
 
         # =========================
@@ -676,6 +695,7 @@ class ImageReviewDialog(QDialog):
         text_box = QGroupBox("Inspirational text")
         text_layout = QVBoxLayout(text_box)
         self.txt_editorial = QPlainTextEdit()
+        self.txt_editorial.setReadOnly(True)
         text_layout.addWidget(self.txt_editorial)
         right_layout.addWidget(text_box)
 
@@ -718,6 +738,12 @@ class ImageReviewDialog(QDialog):
         root.setStretch(1, 0)   # right queda fijo
         scroll.setFixedWidth(600)
 
+        if self.read_only:
+            self.btn_approve.setEnabled(False)
+            self.btn_reject.setEnabled(False)
+            self.reject_reason.setReadOnly(True)
+            self.reject_reason.setPlaceholderText("Book is closed — read-only review")
+
         # --- Signals ---
         self.btn_approve.clicked.connect(self._approve)
         self.btn_reject.clicked.connect(self._reject)
@@ -729,8 +755,7 @@ class ImageReviewDialog(QDialog):
 
 
     def _approve(self):
-        if getattr(self, "editorial_frozen", False):
-            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
+        if self.read_only:
             return
 
         if not self.btn_approve.isEnabled():
@@ -748,8 +773,7 @@ class ImageReviewDialog(QDialog):
 
   
     def _reject(self):
-        if getattr(self, "editorial_frozen", False):
-            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
+        if self.read_only:
             return
 
         if self.row.approval_status == "approved":
@@ -837,8 +861,17 @@ class ImageReviewDialog(QDialog):
             return
 
         # Image exists -> enable actions
-        self.btn_approve.setEnabled(True)
-        self.btn_reject.setEnabled(True)
+        if self.read_only:
+            self.btn_approve.setEnabled(False)
+            self.btn_reject.setEnabled(False)
+            self.reject_reason.setReadOnly(True)
+            self.reject_reason.clear()
+
+        else:
+            self.btn_approve.setEnabled(True)
+            self.btn_reject.setEnabled(True)
+            self.reject_reason.setReadOnly(False)
+
         if row.approval_status == "approved":
             self.btn_approve.setEnabled(False)
             self.btn_reject.setEnabled(False)
@@ -881,7 +914,11 @@ class ImageReviewDialog(QDialog):
         self.txt_prompt.setPlainText(prompt_text)
 
         self.txt_editorial.setPlainText(row.Comentario_editorial)
-        self.reject_reason.setPlainText(row.rejection_reason or "")
+        self.txt_editorial.setReadOnly(True)
+        if self.read_only:
+            self.reject_reason.clear()
+        else:
+            self.reject_reason.setPlainText(row.rejection_reason or "")
         self._update_status_badge()
 
 
@@ -939,11 +976,30 @@ class BatchImageGenerationDialog(QDialog):
 
         root = QHBoxLayout(self)
 
-        # LEFT: image preview
+        # LEFT: image preview + local progress
         self.scene = QGraphicsScene(self)
         self.view = QGraphicsView(self.scene)
         self.view.setAlignment(Qt.AlignCenter)
-        root.addWidget(self.view, 2)
+
+        self.lbl_generating = QLabel("Generating image…")
+        self.lbl_generating.setAlignment(Qt.AlignCenter)
+        self.lbl_generating.setStyleSheet("""
+            font-weight: bold;
+            color: #dddddd;
+            padding: 6px;
+        """)
+
+        self.progress_local = QProgressBar()
+        self.progress_local.setRange(0, 0)  # indeterminate
+        self.progress_local.setFixedHeight(18)
+
+        left_container = QVBoxLayout()
+        left_container.addWidget(self.view, 1)
+        left_container.addWidget(self.lbl_generating)
+        left_container.addWidget(self.progress_local)
+
+        root.addLayout(left_container, 2)
+
 
         # RIGHT: info
         right = QVBoxLayout()
@@ -986,6 +1042,8 @@ class BatchImageGenerationDialog(QDialog):
             f"{row.Comentario_editorial}"
         )
     def _start_current(self):
+        self.lbl_generating.show()
+        self.progress_local.show()
         row = self.rows[self.current]
 
         image_model = self.parent_window.get_selected_image_model()
@@ -1000,15 +1058,11 @@ class BatchImageGenerationDialog(QDialog):
         )
         worker.signals.ok.connect(self._on_image_done)
         worker.signals.err.connect(self._on_error)
-        worker.signals.progress.connect(self.parent_window.overlay.update)
-
-        self.parent_window.overlay.start_indeterminate(
-            f"Generating image {row.ID}"
-        )
+        
         self.parent_window.pool.start(worker)
     def _on_image_done(self, out_path: str):
-        self.parent_window.overlay.stop()
-
+        self.lbl_generating.hide()
+        self.progress_local.hide()
         self.scene.clear()
         pix = QPixmap(out_path)
         self.scene.addPixmap(pix)
@@ -1017,7 +1071,6 @@ class BatchImageGenerationDialog(QDialog):
             Qt.KeepAspectRatio,
         )
         row = self.rows[self.current]
-        row.approval_status = "pending"
         self.parent_window.on_save_project(silent=True)
 
         self.progress.setValue(self.current + 1)
@@ -1052,8 +1105,8 @@ class BatchImageGenerationDialog(QDialog):
         self._update_ui()
         self._start_current()
     def _on_error(self, msg: str):
-        self.parent_window.overlay.stop()
-        self.parent_window._unlock_ui()
+        self.lbl_generating.hide()
+        self.progress_local.hide()
         QMessageBox.critical(self, "Error", msg)
         self.accept()
 
@@ -1140,6 +1193,8 @@ class MainWindow(QMainWindow):
 
         # 3) Freeze
         self.editorial_frozen = True
+        self.set_book_inputs_enabled(False)
+
         if isinstance(getattr(self, "book_data", None), dict):
             self.book_data["editorial_frozen"] = True
 
@@ -1163,7 +1218,7 @@ class MainWindow(QMainWindow):
         self.action_generar_imagenes_pendientes.setEnabled(False)
         self.action_generar_libro.setEnabled(False)
         self.action_close_book.setEnabled(False)
-
+        self._refresh_action_states()
 
     def on_generate_pending_images(self):
         if getattr(self, "editorial_frozen", False):
@@ -1335,6 +1390,10 @@ class MainWindow(QMainWindow):
         self.lbl_editorial_status.setText(
             f"Approved: {approved} | Pending: {pending} | Rejected: {rejected}"
         )
+        self.btn_action_generate_book.setEnabled(not self.editorial_frozen)
+        self.btn_action_generate_images.setEnabled(not self.editorial_frozen)
+        self._refresh_action_states()
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("KDP Coloring Book Builder (MVP)")
@@ -1402,6 +1461,8 @@ class MainWindow(QMainWindow):
         self.action_generar_imagenes_pendientes = QAction(
             "Generar imágenes pendientes", self
         )
+        self.action_generar_imagenes_pendientes.setToolTip("Generate all missing images for rows that have no image yet.")
+
         self.action_generar_imagenes_pendientes.setEnabled(False)
         self.action_generar_imagenes_pendientes.triggered.connect(
             self.on_generate_pending_images
@@ -1409,10 +1470,12 @@ class MainWindow(QMainWindow):
         acciones_menu.addAction(self.action_generar_imagenes_pendientes)
 
         self.action_close_book = QAction("Close book (editorial freeze)", self)
+        self.action_close_book.setToolTip("Freeze the book: lock generation and allow read-only review. Export is enabled after freezing.")
         self.action_close_book.triggered.connect(self.on_close_book_editorial)
         acciones_menu.addAction(self.action_close_book)
 
         self.action_export_xls = QAction("Export XLS for Canva", self)
+        self.action_export_xls.setToolTip("Export is only enabled after the book is closed (frozen).")
         self.action_export_xls.triggered.connect(self.on_export_xls)
         acciones_menu.addAction(self.action_export_xls)
         self.action_export_xls.setEnabled(False)
@@ -1424,6 +1487,9 @@ class MainWindow(QMainWindow):
 
         left = QVBoxLayout()
         main.addLayout(left, 3)
+        right = QVBoxLayout()
+        main.addLayout(right, 1)
+
         # --- Editorial status indicators (A4.3) ---
         self.lbl_editorial_status = QLabel("Approved: 0 | Pending: 0 | Rejected: 0")
         self.lbl_editorial_status.setAlignment(Qt.AlignLeft)
@@ -1431,37 +1497,50 @@ class MainWindow(QMainWindow):
             "font-weight: bold; padding: 6px;"
         )
         left.addWidget(self.lbl_editorial_status)
+        # =========================
+        # TOP AREA — 3 COLUMNS
+        # =========================
+        top_area = QHBoxLayout()
+        left.addLayout(top_area)
 
+        # -------- COLUMN 1: ACTIONS --------
+        actions_box = QGroupBox("Actions")
+        actions_layout = QVBoxLayout(actions_box)
+
+        btn_save = QPushButton("Save project")
+        btn_save.clicked.connect(self.on_save_project)
+
+        self.btn_action_generate_book = QPushButton("Generate book")
+        self.btn_action_generate_book.clicked.connect(self.on_generate_book)
+
+        self.btn_action_generate_images = QPushButton("Generate pending images")
+        self.btn_action_generate_images.setToolTip("Generate all missing images for rows that do not have an image yet.")
+        self.btn_action_generate_images.clicked.connect(self.on_generate_pending_images)
+
+        btn_close_book = QPushButton("Close book")
+        btn_close_book.setToolTip("Freeze the book: lock generation and allow read-only review. Export becomes available.")
+        btn_close_book.clicked.connect(self.on_close_book_editorial)
+
+        actions_layout.addWidget(btn_save)
+        actions_layout.addWidget(self.btn_action_generate_book)
+        actions_layout.addWidget(self.btn_action_generate_images)
+        actions_layout.addWidget(btn_close_book)
+        actions_layout.addStretch()
+
+        top_area.addWidget(actions_box, 1)
+
+        # -------- COLUMN 2: PROJECT --------
         project_box = QGroupBox("Project")
-        left.addWidget(project_box)
-        pvl = QVBoxLayout(project_box)
+        project_layout = QVBoxLayout(project_box)
 
         self.lbl_project = QLabel("No book loaded")
-        pvl.addWidget(self.lbl_project)
+        project_layout.addWidget(self.lbl_project)
 
-        pbtns = QHBoxLayout()
-        pvl.addLayout(pbtns)
+        top_area.addWidget(project_box, 2)
 
-        self.btn_create_book = QPushButton("Create new book")
-        self.btn_open_book = QPushButton("Open existing book")  # will implement later
-        pbtns.addWidget(self.btn_create_book)
-        pbtns.addWidget(self.btn_open_book)
-
-        # Connect (keep connections for future code compatibility, but hide)
-        self.btn_create_book.clicked.connect(self.on_create_new_book)
-        self.btn_open_book.clicked.connect(self.on_open_existing_book)
-
-        self.btn_create_book.hide()
-        self.btn_open_book.hide()
-
-        right = QVBoxLayout()
-        main.addLayout(right, 2)
-        
-        form_box = QGroupBox("Book inputs")
+        # -------- COLUMN 3: EDITORIAL REQUIREMENTS --------
         req_box = QGroupBox("Editorial requirements")
-        left.addWidget(req_box)
-        req_layout = QHBoxLayout(req_box)
-
+        req_layout = QVBoxLayout(req_box)
 
         self.lbl_req_img = QLabel()
         self.lbl_req_txt = QLabel()
@@ -1479,10 +1558,20 @@ class MainWindow(QMainWindow):
         self.lbl_req_txt.setStyleSheet("text-decoration: underline;")
 
         req_layout.addWidget(self.lbl_req_img)
+        req_layout.addSpacing(12)
         req_layout.addWidget(self.lbl_req_txt)
+        req_layout.addStretch()
 
+        top_area.addWidget(req_box, 2)
+        # -------- BOOK INPUTS --------
+        form_box = QGroupBox("Book inputs")
+
+        # -------- BOOK INPUTS --------
+        form_box = QGroupBox("Book inputs")
         left.addWidget(form_box)
+
         form_layout = QHBoxLayout(form_box)
+
 
         form_left = QFormLayout()
         form_right = QFormLayout()
@@ -1647,6 +1736,21 @@ class MainWindow(QMainWindow):
         self.ed_tema.textChanged.connect(self.validate_form)
         self.ed_alcance.textChanged.connect(self.validate_form)
         self.validate_form()
+    def _refresh_action_states(self):
+        has_rows = bool(self.rows)
+        has_project = self.project_dir is not None
+        frozen = bool(getattr(self, "editorial_frozen", False))
+
+        # Menu
+        self.action_generar_libro.setEnabled(has_project and not frozen)
+        self.action_generar_imagen.setEnabled(has_rows and not frozen and bool(self.table.selectionModel().selectedRows()))
+        self.action_generar_imagenes_pendientes.setEnabled(has_rows and has_project and not frozen)
+        self.action_close_book.setEnabled(has_rows and has_project and not frozen)
+        self.action_export_xls.setEnabled(frozen)
+
+        # Actions panel buttons
+        self.btn_action_generate_book.setEnabled(has_project and not frozen)
+        self.btn_action_generate_images.setEnabled(has_rows and has_project and not frozen)
 
     # ---- Menu action enablement helpers ----
     def validate_form(self):
@@ -1666,7 +1770,7 @@ class MainWindow(QMainWindow):
                 self.project_dir is not None and bool(self.rows)
             )
 
-
+        self._refresh_action_states()
     def on_row_selected(self):
         sel = self.table.selectionModel().selectedRows()
         ok = bool(sel)
@@ -1677,8 +1781,15 @@ class MainWindow(QMainWindow):
         if not sel:
             self.txt_prompt.clear()
             self.txt_editorial.clear()
-            self.lbl_image_preview.setText("No image generated")
             self.lbl_image_preview.setPixmap(QPixmap())
+            self.lbl_image_preview.setText("Select a row to preview the image")
+            self.lbl_image_preview.setStyleSheet("""
+                QLabel {
+                    background-color: #e0e0e0;
+                    color: #555;
+                    border: 1px dashed #aaa;
+                }
+            """)
             return
 
         row = self.rows[sel[0].row()]
@@ -1701,7 +1812,7 @@ class MainWindow(QMainWindow):
             self.lbl_image_preview.setStyleSheet("background-color: black;")
         else:
             self.lbl_image_preview.setPixmap(QPixmap())
-            self.lbl_image_preview.setText("No image generated")
+            self.lbl_image_preview.setText("Image not generated yet")
             self.lbl_image_preview.setStyleSheet("""
                 QLabel {
                     background-color: #e0e0e0;
@@ -1755,7 +1866,7 @@ class MainWindow(QMainWindow):
                 spec = book_data.get("spec", {})
             self.book_data = book_data
             self.editorial_frozen = bool(book_data.get("editorial_frozen", False))
-
+            self.set_book_inputs_enabled(not self.editorial_frozen)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo leer book.json:\n{e}")
@@ -1879,7 +1990,7 @@ class MainWindow(QMainWindow):
         self.validate_form()
         self.action_generar_libro.setEnabled(True)
         self.update_editorial_status()
-
+        self._refresh_action_states()
     def on_save_project(self, *, silent: bool = False):
         # 1) Validar formulario
         try:
@@ -1980,7 +2091,9 @@ class MainWindow(QMainWindow):
         self.lbl_image_status.setText("")
 
         self.validate_form()
-
+        self.editorial_frozen = False
+        self.set_book_inputs_enabled(True)
+        self._refresh_action_states()
 
     def draw_icon_image_ok(self):
         """Draw a green eye or document icon for image exists."""
@@ -2025,6 +2138,25 @@ class MainWindow(QMainWindow):
             label.setText(f"🟡 {name}: file is empty")
         else:
             label.setText(f"🔴 {name}: file not found")
+    def set_book_inputs_enabled(self, enabled: bool) -> None:
+        widgets = [
+            self.ed_book_id,
+            self.cb_publico,
+            self.ed_tema,
+            self.ed_alcance,
+            self.ed_tipo,
+            self.sp_num,
+            self.ed_tamano,
+            self.ed_aspect,
+            self.cb_dif_ini,
+            self.cb_dif_fin,
+            self.cb_idioma,
+            self.cb_text_model,
+            self.cb_image_resolution,
+            self.cb_image_model,
+        ]
+        for w in widgets:
+            w.setEnabled(enabled)
 
 
 
@@ -2220,7 +2352,7 @@ class MainWindow(QMainWindow):
                 encoding="utf-8",
             )
         self.update_editorial_status()  
-
+        self._refresh_action_states()
 
     def on_image_generated(self, out_path: str):
         self.overlay.stop()
@@ -2233,8 +2365,6 @@ class MainWindow(QMainWindow):
             if out_path.endswith(f"{r.ID}.png"):
                 r.approval_status = "pending"
                 break
-
-        row.approval_status = "pending"
 
         # Refrescar icono de la fila
         for r_idx, row in enumerate(self.rows):
@@ -2254,9 +2384,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
             return
 
-        if getattr(self, "editorial_frozen", False):
-            QMessageBox.information(self, "Book closed", "This book is frozen. Image generation is disabled.")
-            return
         sel = self.table.selectionModel().selectedRows()
         self.btn_generate_image.setEnabled(False)
         if not sel:
@@ -2274,11 +2401,16 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.Yes:
                 return
         image_model = self.get_selected_image_model()
-        self.overlay.start_indeterminate("🎨 AI is generating the image…")
         image_resolution = self.get_selected_image_resolution()
         self._lock_ui()
 
-       
+        row_idx = self.table.selectionModel().selectedRows()[0].row()
+        row = self.rows[row_idx]
+
+        self.overlay.start_indeterminate(
+            f"Generating image {row.ID}…"
+        )
+
         worker = GenerateImageWorker(
             self.client,
             row,
@@ -2286,7 +2418,6 @@ class MainWindow(QMainWindow):
             image_resolution,
             self.images_dir,
         )
-        worker.signals.progress.connect(self.overlay.update)
         worker.signals.ok.connect(self.on_image_generated)
         worker.signals.err.connect(self.on_worker_error)
         self.pool.start(worker)
@@ -2302,9 +2433,9 @@ class MainWindow(QMainWindow):
         return
 
     def on_table_double_clicked(self, row_idx, col_idx):
-        if getattr(self, "editorial_frozen", False):
-            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
-            return
+        # Allow review in read-only mode when frozen
+        # (ImageReviewDialog already handles read_only based on parent_window.editorial_frozen)
+
 
         if not (0 <= row_idx < len(self.rows)):
             return
