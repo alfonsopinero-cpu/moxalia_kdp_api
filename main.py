@@ -1396,7 +1396,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KDP Coloring Book Builder (MVP)")
+        self.setWindowTitle("Moxalia – Coloring Book Studio")
         self.resize(1400, 900)              # tamaño inicial razonable
         self.setMinimumSize(1280, 800)      # 👈 clave para pantallas 14"
         # --- Editorial status indicators ---

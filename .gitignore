@@ -11,7 +11,12 @@ venv/
 projects/
 projects/**
 
-
+/dist
+/build
+/installer
+*.exe
+*.msi
+*.dmg
 # Environment
 .env
 
