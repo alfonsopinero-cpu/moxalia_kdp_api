@@ -729,6 +729,10 @@ class ImageReviewDialog(QDialog):
 
 
     def _approve(self):
+        if getattr(self, "editorial_frozen", False):
+            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
+            return
+
         if not self.btn_approve.isEnabled():
             return
         self.row.approval_status = "approved"
@@ -744,6 +748,10 @@ class ImageReviewDialog(QDialog):
 
   
     def _reject(self):
+        if getattr(self, "editorial_frozen", False):
+            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
+            return
+
         if self.row.approval_status == "approved":
             reply = QMessageBox.warning(
                 self,
@@ -860,10 +868,15 @@ class ImageReviewDialog(QDialog):
 
         if row.rejection_reason:
             prompt_text += (
-                "\n\n=== PREVIOUS IMAGE REJECTION ===\n"
-                "A previous version of this image was generated and rejected for the following reason:\n\n"
+                "\n\n"
+                "⚠️ IMPORTANT — PREVIOUS IMAGE REJECTION\n"
+                "-------------------------------------\n"
+                "A previous version of this image was generated and REJECTED.\n"
+                "The following reason was provided by the reviewer and was used "
+                "as mandatory feedback to regenerate the current image:\n\n"
                 f"{row.rejection_reason}\n"
             )
+
 
         self.txt_prompt.setPlainText(prompt_text)
 
@@ -1067,7 +1080,90 @@ class MainWindow(QMainWindow):
                 "Text requirements",
                 data["status"],
             )
+    def on_close_book_editorial(self):
+        if self.project_dir is None or self.images_dir is None or not self.rows:
+            QMessageBox.warning(self, "Close book", "Open a project with images first.")
+            return
+
+        if getattr(self, "editorial_frozen", False):
+            QMessageBox.information(self, "Close book", "This book is already frozen.")
+            return
+
+        # 1) Validar que TODAS las imágenes existen
+        missing_ids = []
+        for r in self.rows:
+            if not (self.images_dir / f"{r.ID}.png").exists():
+                missing_ids.append(r.ID)
+
+        if missing_ids:
+            # no listamos todas si son muchas
+            sample = ", ".join(missing_ids[:10])
+            more = "" if len(missing_ids) <= 10 else f" (+{len(missing_ids)-10} more)"
+            QMessageBox.critical(
+                self,
+                "Cannot close book",
+                f"Missing images: {len(missing_ids)}\n\n"
+                f"Examples: {sample}{more}\n\n"
+                "Generate all missing images before closing the book.",
+            )
+            return
+
+        # 2) Si hay pending/rejected → forzar a approved
+        not_approved = [r for r in self.rows if r.approval_status != "approved"]
+
+        if not_approved:
+            reply = QMessageBox.warning(
+                self,
+                "Unapproved images",
+                f"All images exist, but {len(not_approved)} image(s) are not approved.\n\n"
+                "They will be forced to APPROVED and the book will be CLOSED.\n\n"
+                "Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            for r in not_approved:
+                r.approval_status = "approved"
+                # cierre editorial: limpia motivos para no arrastrar “rechazos” en un libro cerrado
+                r.rejection_reason = f"[AUTO-APPROVED ON FREEZE]\n{r.rejection_reason}".strip()
+
+
+        # 3) Freeze
+        self.editorial_frozen = True
+        if isinstance(getattr(self, "book_data", None), dict):
+            self.book_data["editorial_frozen"] = True
+
+        # 4) Refrescar colores (y contadores si los tienes)
+        for i, r in enumerate(self.rows):
+            self._apply_row_color(i, r.approval_status)
+
+        if hasattr(self, "update_editorial_status"):
+            self.update_editorial_status()
+
+        # 5) Guardar
+        self.on_save_project(silent=False)
+
+        QMessageBox.information(
+            self,
+            "Book closed",
+            "Book closed successfully.\n\n"
+            "Image generation is now disabled.",
+        )
+        self.action_generar_imagen.setEnabled(False)
+        self.action_generar_imagenes_pendientes.setEnabled(False)
+        self.action_generar_libro.setEnabled(False)
+        self.action_close_book.setEnabled(False)
+
+
     def on_generate_pending_images(self):
+        if getattr(self, "editorial_frozen", False):
+            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
+            return
+
+
+
         if not self.images_dir:
             QMessageBox.warning(self, "No project", "Open a project first.")
             return
@@ -1188,6 +1284,8 @@ class MainWindow(QMainWindow):
         self.req_texto = load_requirement_file(REQ_TEXTO_PATH)
         self.project_dir: Optional[Path] = None
         self.images_dir: Optional[Path] = None
+        self.book_data: Dict[str, Any] = {}
+        self.editorial_frozen: bool = False
 
         self.rows: List[IllustrationRow] = []
         self.current_spec: Optional[BookSpec] = None
@@ -1243,6 +1341,9 @@ class MainWindow(QMainWindow):
         )
         acciones_menu.addAction(self.action_generar_imagenes_pendientes)
 
+        self.action_close_book = QAction("Close book (editorial freeze)", self)
+        self.action_close_book.triggered.connect(self.on_close_book_editorial)
+        acciones_menu.addAction(self.action_close_book)
         # ----- CENTRAL UI -----
         root = QWidget()
         self.setCentralWidget(root)
@@ -1575,6 +1676,9 @@ class MainWindow(QMainWindow):
             with book_json_p.open("r", encoding="utf-8") as f:
                 book_data = json.load(f)
                 spec = book_data.get("spec", {})
+            self.book_data = book_data
+            self.editorial_frozen = bool(book_data.get("editorial_frozen", False))
+
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo leer book.json:\n{e}")
@@ -1739,6 +1843,7 @@ class MainWindow(QMainWindow):
                 {
                     "schema_version": "1.2",
                     "book_id": spec.book_id,
+                    "editorial_frozen": bool(getattr(self, "editorial_frozen", False)),
                     "spec": spec.model_dump(),
                     "image_settings": {
                         "image_model": self.get_selected_image_model(),
@@ -2037,6 +2142,12 @@ class MainWindow(QMainWindow):
         self.btn_generate_image.setEnabled(True)
         self.lbl_image_status.setText(f"Saved: {out_path}")
 
+        # localizar la fila correspondiente y marcarla pending
+        for r in self.rows:
+            if out_path.endswith(f"{r.ID}.png"):
+                r.approval_status = "pending"
+                break
+
         row.approval_status = "pending"
 
         # Refrescar icono de la fila
@@ -2053,6 +2164,13 @@ class MainWindow(QMainWindow):
 
 
     def on_generate_image(self):
+        if getattr(self, "editorial_frozen", False):
+            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
+            return
+
+        if getattr(self, "editorial_frozen", False):
+            QMessageBox.information(self, "Book closed", "This book is frozen. Image generation is disabled.")
+            return
         sel = self.table.selectionModel().selectedRows()
         self.btn_generate_image.setEnabled(False)
         if not sel:
@@ -2095,6 +2213,10 @@ class MainWindow(QMainWindow):
         return
 
     def on_table_double_clicked(self, row_idx, col_idx):
+        if getattr(self, "editorial_frozen", False):
+            QMessageBox.warning(self, "Book closed", "This book is editorially frozen.")
+            return
+
         if not (0 <= row_idx < len(self.rows)):
             return
 

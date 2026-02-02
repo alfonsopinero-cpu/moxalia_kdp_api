@@ -2,93 +2,105 @@ EDITORIAL PRIORITY RULE (NON-NEGOTIABLE)
 All rules below are mandatory and override any other instruction.
 If any conflict or ambiguity exists, STOP and request clarification.
 
-GENERAL EDITORIAL RULES
-- Book for Adults or Children strictly according to book specification.
-- Commercial use allowed for Amazon KDP.
-- One illustration per page.
-- Blank reverse page.
-- Designed for print, not screen.
-- Consistent visual style across the entire book.
+GLOBAL PURPOSE
+This is a PRINT coloring book for Amazon KDP.
+The output MUST be black-and-white line art, fully colorable.
 
-FORMAT & COMPOSITION
-- Vertical orientation.
-- Same aspect ratio for all illustrations.
-- FULL-PAGE composition: the drawing must visually reach the canvas edges.
-- No centered or floating compositions.
+FORMAT & CANVAS
+- Vertical orientation only.
+- Single illustration per page.
+- Full-page composition: drawing must visually reach page edges.
+- No floating or centered compositions.
+- Designed for print, not for screen.
 
-GRAPHIC STYLE (STRICT)
-- Black line art on white background only.
-- OUTLINES ONLY.
-- No fills, no silhouettes, no black masses.
-- No grayscale, no shading, no gradients.
-- No textures, no cross-hatching.
-- Depth achieved ONLY through line work.
+BACKGROUND (CRITICAL)
+- Background MUST be PURE WHITE (#FFFFFF).
+- No black, dark, gray or inverted backgrounds.
+- No negative space inversion.
+- White background is mandatory and non-negotiable.
 
-DETAIL LEVEL
-- Medium to high detail, but relaxing to color.
-- Clean, consistent lines.
-- Clearly colorable.
-- No visual noise or fatigue.
+LINE STYLE (STRICT)
+- Black ink lines ONLY (#000000).
+- Outlines ONLY.
+- No fills.
+- No silhouettes.
+- No black masses.
+- No grayscale.
+- No shading.
+- No gradients.
+- No textures.
+- No cross-hatching.
+- Depth achieved ONLY through line density and overlap.
 
-IMMERSIVE COMPOSITION (KEY RULE)
+COMPOSITION & IMMERSION (KEY RULE)
 - NEVER depict monuments as isolated objects.
-- The viewer must feel inside the place, not observing a postcard.
-- Human, plausible point of view:
+- The viewer must feel INSIDE the scene.
+- Human-scale point of view only:
   street, square, park, riverbank, path, bridge.
-- No extreme aerial or drone views.
-- No neutral catalog-style shots.
+- No aerial, drone, satellite or top-down views.
+- No postcard-style framing.
 
 FOREGROUND ANCHOR (MANDATORY)
-- Each illustration MUST include foreground elements entering from the bottom edge.
-- Foreground elements must be partially cropped by the frame.
-- Examples: paths, stairs, railings, vegetation, rocks, nearby objects or people.
-- Scenes without a strong foreground are REJECTED.
+- Each illustration MUST include foreground elements entering from the BOTTOM edge.
+- Foreground elements MUST be partially cropped by the frame.
+- Examples:
+  paths, stairs, railings, vegetation, rocks, nearby objects, people.
+- Scenes without a strong foreground are INVALID.
 
 BORDERS RULE (MANDATORY)
-- The drawing must touch:
-  - at least one upper edge AND
-  - at least one lower edge.
-- Scenes floating with empty space above or below are NOT allowed.
+- Drawing MUST touch:
+  - at least one TOP edge AND
+  - at least one BOTTOM edge.
+- Floating scenes with empty margins are NOT allowed.
 
 SKY RULE (STRICT)
-- Sky must not exceed 20% of the image.
+- Sky must NOT exceed 20% of the image.
 - Sky cannot be empty.
-- Must include line-art elements (clouds, birds, sun/moon).
-- The top edge must also include architecture, vegetation, or structure.
+- Must include line-art elements:
+  clouds, birds, sun or moon.
+- The TOP edge must also include architecture or vegetation.
 
 ARCHITECTURE
 - Realistic, recognizable monuments.
 - Correct proportions.
-- No fantasy or modern incoherent elements.
-- All architectural details drawn with lines only.
+- No fantasy elements.
+- No modern incoherent structures.
+- All details drawn with clean line work.
 
 NATURE ELEMENTS
-- Vegetation: open line foliage, no black masses.
-- Mountains/relief: contour lines and layered depth only.
-- Water: flowing lines, waves, curves; no filled surfaces.
+- Vegetation: open line foliage, no black fills.
+- Mountains/relief: contour lines only.
+- Water: flowing lines and waves, no filled areas.
 
 PEOPLE & ANIMALS (IF PRESENT)
 - Secondary presence only.
-- Realistic proportions and natural behavior.
-- No posing, no symmetry, no looking at camera.
+- Realistic proportions.
+- Natural, unposed behavior.
+- No symmetry.
+- No looking at camera.
 
-PROHIBITED CONTENT
+PROHIBITED CONTENT (ABSOLUTE)
 - No text of any kind.
-- No letters, numbers, signs.
-- No logos, watermarks, signatures.
-- No decorative frames unless explicitly requested.
+- No letters.
+- No numbers.
+- No signs.
+- No logos.
+- No watermarks.
+- No signatures.
+- No decorative frames.
 
-COLLECTION RULES
+CONSISTENCY RULES
 - One country per image.
 - No consecutive country repetition.
-- Iconic, clearly identifiable locations through visuals only.
+- Consistent visual style across the entire book.
 
 ACCEPTANCE CRITERIA
-An image is valid ONLY if:
-- 100% colorable (no dead black areas).
-- Fully immersive and full-page.
-- Matches the book’s global style.
-- Passes strict editorial review before KDP upload.
+An image is VALID only if:
+- 100% colorable.
+- White background.
+- No black or filled areas.
+- Full-page immersive composition.
+- Matches ALL rules above.
 
 CORE PRINCIPLE
 We do not draw monuments.
