@@ -1053,11 +1053,19 @@ class BatchImageGenerationDialog(QDialog):
         self._start_current()
     def _on_error(self, msg: str):
         self.parent_window.overlay.stop()
+        self.parent_window._unlock_ui()
         QMessageBox.critical(self, "Error", msg)
         self.accept()
 
 
 class MainWindow(QMainWindow):
+    def _lock_ui(self):
+        self.centralWidget().setEnabled(False)
+
+    def _unlock_ui(self):
+        self.centralWidget().setEnabled(True)
+        self.overlay.stop()
+
     def get_selected_image_resolution(self) -> str:
         label = self.cb_image_resolution.currentText()
         return IMAGE_RESOLUTIONS[label]
@@ -1236,6 +1244,64 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_requirement(which)
 
+    def on_export_xls(self):
+        if not getattr(self, "editorial_frozen", False):
+            QMessageBox.warning(
+                self,
+                "Export not allowed",
+                "The book must be CLOSED before exporting to XLS.",
+            )
+            return
+
+        from re import sub
+
+        raw_title = self.ed_tema.toPlainText().strip()
+        safe_title = sub(r"[^\w\s-]", "", raw_title).strip().replace(" ", "_")
+        default_name = f"{safe_title or 'canva_import'}.xlsx"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export XLS for Canva",
+            default_name,
+            "Excel Files (*.xlsx)",
+        )
+
+        if not path:
+            return
+
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Canva Import"
+
+        # Header EXACTO requerido por Canva
+        ws.append([
+            "ID",
+            "Monumento",
+            "Pais/region",
+            "Main Foco",
+            "Comentario Editorial",
+        ])
+
+        for r in self.rows:
+            ws.append([
+                r.ID,
+                r.Monumento,
+                r.Pais_Region,
+                r.Main_foco,
+                r.Comentario_editorial,
+            ])
+
+        wb.save(path)
+
+        QMessageBox.information(
+            self,
+            "Export completed",
+            f"XLS exported successfully:\n{path}",
+        )
+
+
     def resizeEvent(self, event):
         self.overlay.setGeometry(self.rect())
         super().resizeEvent(event)
@@ -1264,6 +1330,7 @@ class MainWindow(QMainWindow):
         approved = sum(1 for r in self.rows if r.approval_status == "approved")
         rejected = sum(1 for r in self.rows if r.approval_status == "rejected")
         pending = len(self.rows) - approved - rejected
+        self.action_export_xls.setEnabled(self.editorial_frozen)
 
         self.lbl_editorial_status.setText(
             f"Approved: {approved} | Pending: {pending} | Rejected: {rejected}"
@@ -1344,6 +1411,12 @@ class MainWindow(QMainWindow):
         self.action_close_book = QAction("Close book (editorial freeze)", self)
         self.action_close_book.triggered.connect(self.on_close_book_editorial)
         acciones_menu.addAction(self.action_close_book)
+
+        self.action_export_xls = QAction("Export XLS for Canva", self)
+        self.action_export_xls.triggered.connect(self.on_export_xls)
+        acciones_menu.addAction(self.action_export_xls)
+        self.action_export_xls.setEnabled(False)
+
         # ----- CENTRAL UI -----
         root = QWidget()
         self.setCentralWidget(root)
@@ -1420,7 +1493,11 @@ class MainWindow(QMainWindow):
         self.ed_book_id = QLineEdit()
         self.cb_publico = QComboBox()
         self.cb_publico.addItems(["Adultos", "Niños"])
-        self.ed_tema = QLineEdit()
+        self.ed_tema = QPlainTextEdit()
+        self.ed_tema.setPlaceholderText("Tema del libro")
+        self.ed_tema.setFixedHeight(80)
+        self.ed_tema.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+
         self.ed_alcance = QLineEdit()
         self.ed_tipo = QLineEdit("Monumentos y paisajes")
         self.sp_num = QSpinBox()
@@ -1576,7 +1653,7 @@ class MainWindow(QMainWindow):
         has_project = self.project_dir is not None
         ok = (
             self.ed_book_id.text().strip() != ""
-            and self.ed_tema.text().strip() != ""
+            and self.ed_tema.toPlainText().strip() != ""
             and self.ed_alcance.text().strip() != ""
         )
         self.btn_generate_book.setEnabled(ok)
@@ -1689,7 +1766,7 @@ class MainWindow(QMainWindow):
             # Handle missing keys gracefully if needed
             self.ed_book_id.setText(spec.get("book_id", ""))
             self.cb_publico.setCurrentText(spec.get("publico", "Adultos"))
-            self.ed_tema.setText(spec.get("tema", ""))
+            self.ed_tema.setPlainText(spec.get("tema", ""))   # ← AQUÍ
             self.ed_alcance.setText(spec.get("alcance_geografico", ""))
             self.ed_tipo.setText(spec.get("tipo_imagenes", ""))
             self.sp_num.setValue(spec.get("numero_imagenes", 0))
@@ -1956,7 +2033,7 @@ class MainWindow(QMainWindow):
         return BookSpec(
             book_id=self.ed_book_id.text().strip(),
             publico=self.cb_publico.currentText(),
-            tema=self.ed_tema.text().strip(),
+            tema = self.ed_tema.toPlainText().strip(),
             alcance_geografico=self.ed_alcance.text().strip(),
             tipo_imagenes=self.ed_tipo.text().strip(),
             numero_imagenes=int(self.sp_num.value()),
@@ -1976,7 +2053,8 @@ class MainWindow(QMainWindow):
     def on_generate_book(self):
         try:
             spec = self.get_spec()
-             # Advertir si ya existe contenido generado
+
+            # Advertir si ya existe contenido generado
             has_rows = bool(self.rows)
             has_images = self.images_dir and any(self.images_dir.glob("*.png"))
 
@@ -2000,19 +2078,22 @@ class MainWindow(QMainWindow):
                     for p in self.images_dir.glob("*.png"):
                         p.unlink(missing_ok=True)
 
+            # ✅ F2.1 — Force save BEFORE generating
+            self.on_save_project(silent=True)
+
         except ValidationError as e:
             QMessageBox.critical(self, "Invalid inputs", str(e))
             return
-        # 1) Comprobar que hay un libro cargado
+
+        # Validaciones duras
         if self.project_dir is None:
-            QMessageBox .critical(
+            QMessageBox.critical(
                 self,
                 "No book loaded",
                 "Create or open a book first.",
             )
             return
 
-        # 2) Comprobar que los requerimientos están cargados
         if (
             self.req_imagenes["status"] != "ok"
             or self.req_texto["status"] != "ok"
@@ -2029,6 +2110,8 @@ class MainWindow(QMainWindow):
         text_model = self.get_selected_text_model()
         self.lbl_status.setText("Generating book table via OpenAI...")
         self.overlay.start_indeterminate("🤖 AI is generating the book…")
+        self._lock_ui()
+
         worker = GenerateBookWorker(
             self.client,
             spec,
@@ -2038,8 +2121,8 @@ class MainWindow(QMainWindow):
         )
         worker.signals.ok.connect(self.on_book_generated)
         worker.signals.err.connect(self.on_worker_error)
-        worker.signals.progress.connect(self.overlay.update)
         self.pool.start(worker)
+
     def _apply_row_color(self, row_idx: int, status: str):
         if status == "approved":
             bg_color = QColor("#2f6f4e")   # verde oscuro elegante
@@ -2072,6 +2155,8 @@ class MainWindow(QMainWindow):
         self.btn_generate_book.setEnabled(True)
         self.rows = rows
         self.table.setRowCount(len(rows))
+        self._unlock_ui()
+
         # Image icons go in column 0
         for r_idx, row in enumerate(rows):
             d = row.model_dump()
@@ -2141,6 +2226,7 @@ class MainWindow(QMainWindow):
         self.overlay.stop()
         self.btn_generate_image.setEnabled(True)
         self.lbl_image_status.setText(f"Saved: {out_path}")
+        self._unlock_ui()
 
         # localizar la fila correspondiente y marcarla pending
         for r in self.rows:
@@ -2190,6 +2276,7 @@ class MainWindow(QMainWindow):
         image_model = self.get_selected_image_model()
         self.overlay.start_indeterminate("🎨 AI is generating the image…")
         image_resolution = self.get_selected_image_resolution()
+        self._lock_ui()
 
        
         worker = GenerateImageWorker(
@@ -2206,8 +2293,10 @@ class MainWindow(QMainWindow):
 
     def on_worker_error(self, msg: str):
         self.overlay.stop()
+        self._unlock_ui()
         self.btn_generate_book.setEnabled(True)
         self.btn_generate_image.setEnabled(True)
+        
         QMessageBox.critical(self, "Error", msg)
     def on_table_cell_clicked(self, row_idx, col_idx):
         return
