@@ -49,42 +49,28 @@ from PySide6.QtCore import QUrl
 load_dotenv()
 
 IMAGE_RESOLUTIONS = {
-    "Testing (1024 x 1024)": "1024x1024",
     "Working (1024 x 1536)": "1024x1536",
     "Final KDP (2550 x 3300)": "2550x3300",
 }
-REQ_IMAGENES_PATH = Path.cwd() / "requerimientos_imagenes.txt"
-REQ_TEXTO_PATH = Path.cwd() / "requerimientos_texto.txt"
+PROMPTS_DIR = Path.cwd() / "prompts"
+
+REQ_IMAGENES_PATH = PROMPTS_DIR / "requerimientos_imagenes.txt"
+REQ_TEXTO_PATH = PROMPTS_DIR / "requerimientos_texto.txt"
+SYSTEM_PATH = PROMPTS_DIR / "system.txt"
+USER_PATH = PROMPTS_DIR / "user.txt"
 
 DEFAULT_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini")
 DEFAULT_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5")
 
-GLOBAL_POSITIVE_GUARDRAILS = """
-CRITICAL OUTPUT CONSTRAINTS (NON-NEGOTIABLE)
-- Black-and-white coloring book line art only.
-- Background MUST be pure white (#FFFFFF) and remain uninked.
-- Do NOT invert colors. Do NOT fill the background. No black background.
-- Do NOT draw any rectangular border/frame around the page.
-- Composition must reach the edges naturally (cropping), but WITHOUT a border line.
-- Background must remain EMPTY and UNINKED.
-- White background means NO ink at all in background areas.
-- Any pixel not belonging to line art must stay white.
-- The drawing may be cropped by page edges, but NO line may run parallel to all four edges.
-- Page edges are NOT objects and must NOT be outlined.
-""".strip()
-
-GLOBAL_NEGATIVE_GUARDRAILS = """
-black background, dark background, inverted colors, negative space inversion,
-background fill, solid fill, large black areas, silhouettes,
-frame, border, outline border, page border,outer contour, page outline, edge line, bounding box, crop frame, rectangular frame, postcard frame, margin box, vignette,
-grayscale, shading, gradients, textures, cross-hatching,
-text, letters, numbers, logos, watermark, signature
-filled background, inked background, background shading, background texture
-""".strip()
-
 
 OUT_DIR = Path.cwd() / "illustraciones"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+LOGS_DIR = Path.cwd() / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+OPENAI_LOG_CSV = LOGS_DIR / "openai_calls_log.csv"
+
 
 STATE_PATH = Path.cwd() / "book_state.json"
 
@@ -116,19 +102,19 @@ class IllustrationRow(BaseModel):
     Pais_Region: str
     Monumento: str
     Main_foco: str
-
-    Difficulty_block: str  # Bajo | Medio | Alto | Extremo
+    Bloque: str
+    Difficulty_block: str
     Difficulty_D: int
     Line_thickness_L: float
     White_space_W: float
     Complexity_C: float
 
-    Nombre_fichero_editorial: str
-    Nombre_fichero_descargado: str
-    Comentario_editorial: str
-    Prompt_core: str
     Prompt_final: str
     Prompt_negativo: str
+    Comentario_editorial: str
+
+    Nombre_fichero_editorial: str
+    Nombre_fichero_descargado: str
     approval_status: str = "pending"  # pending | approved | rejected
     rejection_reason: str = ""
 
@@ -152,54 +138,49 @@ def load_requirement_file(path: Path) -> dict:
 
     return {"status": "ok", "content": content}
 
-def build_prompt_final(
-    *,
-    spec: BookSpec,
-    row: IllustrationRow,
-    req_img: str,
-    req_txt: str,
-) -> str:
-    return (
-        "=== COLORING BOOK PROMPT ===\n\n"
-        "BOOK CONTEXT\n"
-        f"Title / Theme: {spec.tema}\n"
-        f"Audience: {spec.publico}\n"
-        f"Geographic scope: {spec.alcance_geografico}\n"
-        f"Language: {spec.idioma_texto}\n\n"
-        "EDITORIAL IMAGE REQUIREMENTS\n"
-        f"{req_img}\n\n"
-        "EDITORIAL TEXT REQUIREMENTS\n"
-        f"{req_txt}\n\n"
-        "DIFFICULTY PARAMETERS (MANDATORY)\n"
-        f"Difficulty level: {row.Difficulty_D}/100\n"
-        f"Block: {row.Difficulty_block}\n"
-        f"Line thickness (L): {row.Line_thickness_L}\n"
-        f"White space dominance (W): {row.White_space_W}\n"
-        f"Structural complexity (C): {row.Complexity_C}\n"
-        "DIFFICULTY INTERPRETATION (MANDATORY)\n"
-        "Higher difficulty means MORE distinct drawable elements.\n"
-        "Increase the number of architectural sub-elements, foreground elements, and mid-ground details with difficulty.\n"
-        "Difficulty must be visible at first glance when comparing pages.\n"
-        "COMPLEXITY ENFORCEMENT (MANDATORY)\n"
-        f"Target distinct drawable elements (approx.): {"
-        f"8-14" if row.Difficulty_D <= 25 else
-        f"18-28" if row.Difficulty_D <= 50 else
-        f"35-55" if row.Difficulty_D <= 75 else
-        f"60-90"
-        f"} distinct drawable elements.\n"
-        "Each element must be individually colorable and visually separable.\n"
-        "Failure to clearly differentiate difficulty levels is a rejection criterion.\n\n"
-        "Elements include: windows/arches/columns, bricks/tiles, railings, foliage clusters, street objects, steps, foreground objects.\n"
-        "Low difficulty MUST look sparse with large open areas.\n"
-        "High difficulty MUST look dense with many small distinct elements.\n"
 
-        "SCENE DESCRIPTION\n"
-        f"{row.Prompt_core}"
-    ).strip()
+
 
 # =========================
 # OPENAI HELPERS
 # =========================
+import csv
+
+def log_openai_call(
+    call_type: str,
+    model: str,
+    payload: dict,
+    start_ts: str,
+    end_ts: str,
+    status: str,
+    error: str = "",
+):
+    file_exists = OPENAI_LOG_CSV.exists()
+
+    with OPENAI_LOG_CSV.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+
+        if not file_exists:
+            writer.writerow([
+                "timestamp_start",
+                "timestamp_end",
+                "type",
+                "model",
+                "status",
+                "error",
+                "payload",
+            ])
+
+        writer.writerow([
+            start_ts,
+            end_ts,
+            call_type,
+            model,
+            status,
+            error,
+            json.dumps(payload, ensure_ascii=False),
+        ])
+
 def _extract_json(text: str) -> Any:
     text = text.strip()
     try:
@@ -259,6 +240,58 @@ def build_difficulty_sequence(total: int, start: str, end: str) -> list[dict]:
 
     return sequence
     
+def _validate_batch_rows(data: Any, expected_n: int) -> list[dict]:
+    if not isinstance(data, list):
+        raise ValueError("Model did not return a JSON array")
+    if len(data) != expected_n:
+        raise ValueError(f"Batch row count mismatch: expected {expected_n}, got {len(data)}")
+
+    required = {
+        "Categoria",
+        "Publico",
+        "Pais_Region",
+        "Monumento",
+        "Main_foco",
+        "Prompt_final",
+        "Prompt_negativo",
+        "Comentario_editorial",
+    }
+    for i, obj in enumerate(data):
+        if not isinstance(obj, dict):
+            raise ValueError(f"Batch item {i} is not an object")
+        missing = required - set(obj.keys())
+        if missing:
+            raise ValueError(f"Batch item {i} missing keys: {sorted(missing)}")
+    return data
+
+
+def _reorder_no_consecutive_countries(rows: list["IllustrationRow"]) -> list["IllustrationRow"]:
+    rows = list(rows)
+    for i in range(1, len(rows)):
+        if rows[i].Pais_Region == rows[i - 1].Pais_Region:
+            swap_j = None
+            for j in range(i + 1, len(rows)):
+                if rows[j].Pais_Region != rows[i - 1].Pais_Region:
+                    swap_j = j
+                    break
+            if swap_j is not None:
+                rows[i], rows[swap_j] = rows[swap_j], rows[i]
+    return rows
+    
+def monument_importance_score(row: IllustrationRow) -> int:
+    name = row.Monumento.lower()
+
+    PRIORITY = [
+        "eiffel", "colosseum", "great wall", "taj mahal",
+        "petra", "machu picchu", "angkor", "sagrada familia",
+        "acropolis", "pyramids",
+    ]
+
+    for i, key in enumerate(PRIORITY):
+        if key in name:
+            return 100 - i
+
+    return 10
 
 def generate_illustrations(
     client: OpenAI,
@@ -270,108 +303,206 @@ def generate_illustrations(
     progress_cb=None,
 ) -> List[IllustrationRow]:
 
+    total = spec.numero_imagenes
+    batch_size = 5
+    num_batches = (total + batch_size - 1) // batch_size
+
+    if progress_cb:
+        progress_cb(0, f"Starting {num_batches} batches of {batch_size}")
+
+    rows_acc: List[IllustrationRow] = []
+    system = SYSTEM_PATH.read_text(encoding="utf-8")
+    user_template = USER_PATH.read_text(encoding="utf-8")
+    used_monuments: set[str] = set()
+    country_counter: dict[str, int] = {}
+    MAX_PER_COUNTRY = 3
+
+    for b in range(num_batches):
+        start_idx = b * batch_size
+        n = min(batch_size, total - start_idx)
+
+        if progress_cb:
+            pct = int((start_idx / total) * 90)
+            progress_cb(pct, f"Generating batch {b+1}/{num_batches} ({start_idx}/{total})")
+
+        blocked_countries = [
+            c for c, count in country_counter.items()
+            if count >= MAX_PER_COUNTRY
+        ]
+
+        user = user_template.format(
+            book_spec = json.dumps(spec.model_dump(), ensure_ascii=False, indent=2),
+            req_img=req_img,
+            req_txt=req_txt,
+            batch_size=n,
+            blocked_countries=json.dumps(sorted(blocked_countries), ensure_ascii=False),
+            used_monuments=json.dumps(sorted(list(used_monuments)), ensure_ascii=False),
+            country_counts=json.dumps(country_counter, ensure_ascii=False),
+        )
+
+
+
+        start_ts = _utc_now_iso()
+
+        try:
+            r = client.chat.completions.create(
+                model=text_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.3,
+            )
+
+            end_ts = _utc_now_iso()
+
+            log_openai_call(
+                call_type="generate_book_batch",
+                model=text_model,
+                payload={"batch_size": n},
+                start_ts=start_ts,
+                end_ts=end_ts,
+                status="success",
+            )
+
+        except Exception as e:
+            end_ts = _utc_now_iso()
+            log_openai_call(
+                call_type="generate_book_batch",
+                model=text_model,
+                payload={"batch_size": n},
+                start_ts=start_ts,
+                end_ts=end_ts,
+                status="error",
+                error=str(e),
+            )
+            raise
+
+
+        raw = r.choices[0].message.content
+        data = _extract_json(raw)
+        data = _validate_batch_rows(data, n)
+
+        accepted = []
+
+        for obj in data:
+            monument = obj["Monumento"].strip()
+            country = obj["Pais_Region"].strip()
+
+            if monument in used_monuments:
+                continue
+            if country_counter.get(country, 0) >= MAX_PER_COUNTRY:
+                continue
+
+            accepted.append(obj)
+
+        if len(accepted) < n:
+            raise ValueError(
+                f"Batch {b+1}: only {len(accepted)}/{n} valid items. "
+                "Model violated constraints; retry batch."
+            )
+
+        for obj in accepted:
+            row = IllustrationRow(
+                ID="000",
+                Bloque="",
+                Difficulty_block="Bajo",
+                Difficulty_D=0,
+                Line_thickness_L=0.0,
+                White_space_W=0.0,
+                Complexity_C=0.0,
+                Nombre_fichero_editorial="",
+                Nombre_fichero_descargado="",
+                approval_status="pending",
+                rejection_reason="",
+                Prompt_final=obj["Prompt_final"],
+                Prompt_negativo=obj["Prompt_negativo"],
+                Comentario_editorial=obj["Comentario_editorial"],
+                Main_foco=obj["Main_foco"],
+                Categoria=obj["Categoria"],
+                Publico=obj["Publico"],
+                Pais_Region=obj["Pais_Region"],
+                Monumento=obj["Monumento"],
+            )
+            rows_acc.append(row)
+            used_monuments.add(row.Monumento)
+            country_counter[row.Pais_Region] = country_counter.get(row.Pais_Region, 0) + 1
+
+    if progress_cb:
+        progress_cb(92, "Finalizing: reorder countries")
+    rows_acc = _reorder_no_consecutive_countries(rows_acc)
+
+    if progress_cb:
+        progress_cb(95, "Finalizing: assign difficulty + IDs")
+    rows_acc.sort(key=monument_importance_score, reverse=True)
     difficulty_sequence = build_difficulty_sequence(
-        total=spec.numero_imagenes,
+        total=total,
         start=spec.dificultad_inicial,
         end=spec.dificultad_final,
     )
 
-    if progress_cb:
-        progress_cb(15, "Difficulty sequence built")
-    system = (
-        "You are a professional editorial engine for Amazon KDP coloring books.\n"
-        "Return ONLY valid JSON (no markdown, no commentary).\n"
-        "You must output a JSON array of objects with EXACT keys:\n"
-        "ID, Categoria, Publico, Pais_Region, Monumento, Main_foco, "
-        "Nombre_fichero_editorial, Nombre_fichero_descargado, "
-        "Comentario_editorial, Prompt_core, Prompt_negativo\n"
-        "Prompt_core MUST contain ONLY the scene description.\n"
-        "DO NOT include difficulty, requirements, formatting rules, or meta instructions.\n"
-        "Main_foco MUST describe: the main monument, the real, plausible surrounding environment, a human-scale point of view\n"
-        "Main_foco must describe a REALISTIC and geographically plausible scene. Do NOT invent landscape elements that do not exist at the real location.\n"
-        "Comentario_editorial MUST be a poetic and inspirational text.\n"
-        "It MUST be between 5 and 10 lines long.\n"
-        "Each line should be a full, meaningful sentence.\n"
-        "The text must describe an emotional or reflective moment connected to the scene.\n"
-        "It must NOT describe technical, historical, or architectural details.\n"
-        "It must NOT explain the monument.\n"
-        "Constraints:\n"
-        "All format, aspect ratio, audience and theme values come from book_spec.\n"
-        "Do NOT infer or override these values\n"
-        f"Exactly {spec.numero_imagenes} rows.\n"
-        "ID must be a zero-padded integer string like 001, 002, ...\n"
-        "Do not repeat the same country in consecutive rows.\n"
-        "The order of illustrations is final.\n"
-        "Prompts MUST be black-and-white line art for coloring books.\n"
-        "No shading, no gray, no fills.\n"
-        "Prompt_negativo MUST strictly forbid: black backgrounds, dark fills, silhouettes, inverted colors, grayscale, shading, gradients, textures, cross-hatching, text, logos, numbers.\n"
-
-    )
-    user = {
-        "book_spec": spec.model_dump(),
-    }
-
-    if progress_cb:
-        progress_cb(30, "Calling OpenAI (text model)")
-
-    r = client.chat.completions.create(
-        model=text_model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-        ],
-        temperature=0.3,
-    )
-
-    raw = r.choices[0].message.content
-    if progress_cb:
-        progress_cb(60, "Parsing model response")
-
-    data = _extract_json(raw)
-
-    if not isinstance(data, list):
-        raise ValueError("Model did not return a JSON array")
-
-    rows: List[IllustrationRow] = []
-
-    for i, obj in enumerate(data):
+    for i, row in enumerate(rows_acc):
         d = difficulty_sequence[i]
+        row.ID = f"{i+1:03d}"
+        row.Difficulty_D = d["D"]
+        row.Difficulty_block = d["block"]
+        row.Bloque = d["block"] 
+        row.Line_thickness_L = d["L"]
+        row.White_space_W = d["W"]
+        row.Complexity_C = d["C"]
 
-        row = IllustrationRow(
-            **obj,
-            Prompt_final="",  # placeholder
-            Difficulty_D=d["D"],
-            Difficulty_block=d["block"],
-            Line_thickness_L=d["L"],
-            White_space_W=d["W"],
-            Complexity_C=d["C"],
-        )
-
-        row.Prompt_final = build_prompt_final(
-            spec=spec,
-            row=row,
-            req_img=req_img,
-            req_txt=req_txt,
-        )
-        rows.append(row)
-
-    if len(rows) != spec.numero_imagenes:
-        raise ValueError(
-            f"Row count mismatch: expected {spec.numero_imagenes}, got {len(rows)}"
-        )
-    if progress_cb:
-        progress_cb(85, "Validating results")
-
-    # VALIDACIÓN DURA — PAÍSES NO CONSECUTIVOS
-    for i in range(1, len(rows)):
-        if rows[i].Pais_Region == rows[i - 1].Pais_Region:
-            raise ValueError(
-                f"Country repetition at index {i}: {rows[i].Pais_Region}"
+        row.Nombre_fichero_editorial = f"{row.ID}_{_safe_slug(row.Monumento)}"
+        row.Nombre_fichero_descargado = f"{row.ID}_{_safe_slug(row.Monumento)}.png"
+        
+        # =========================
+        # Inject FINAL DIFFICULTY CONTROL into prompt
+        # =========================
+        # --- Difficulty semantic description ---
+        if row.Difficulty_D <= 25:
+            difficulty_text = (
+                "LOW difficulty: few visual elements, large open areas, "
+                "thick clean lines, minimal architectural detail, "
+                "simple foreground composition."
             )
+        elif row.Difficulty_D <= 50:
+            difficulty_text = (
+                "MEDIUM difficulty: balanced visual density, moderate architectural detail, "
+                "clear separations between elements, medium line weight."
+            )
+        elif row.Difficulty_D <= 75:
+            difficulty_text = (
+                "HIGH difficulty: dense architecture, multiple mid-ground and foreground elements, "
+                "finer lines, smaller colorable zones."
+            )
+        else:
+            difficulty_text = (
+                "EXTREME difficulty: very dense structure, intricate details, "
+                "thin lines, many small independent colorable elements, "
+                "complex layered composition."
+            )
+
+        difficulty_append = (
+            "\n\n--- FINAL DIFFICULTY CONTROL (EDITORIAL — NON NEGOTIABLE) ---\n"
+            f"Difficulty level: {row.Difficulty_block} ({row.Difficulty_D}/100)\n"
+            f"{difficulty_text}\n\n"
+            "You MUST visibly adjust:\n"
+            "- visual density\n"
+            "- number of architectural elements\n"
+            "- foreground complexity\n"
+            "- line thickness and spacing\n"
+            "Difficulty differences MUST be obvious at first glance between pages.\n"
+        )
+
+
+        row.Prompt_final = row.Prompt_final.strip() + difficulty_append
+
+
+
     if progress_cb:
         progress_cb(100, "Done")
 
-    return rows
+    return rows_acc
+
 
 
 def generate_image_png(
@@ -392,11 +523,39 @@ def generate_image_png(
 
     if progress_cb:
         progress_cb(0, "Starting image generation")
-    img = client.images.generate(
-        model=image_model,
-        prompt=final_prompt,
-        size=image_resolution,
-    )
+    start_ts = _utc_now_iso()
+
+    try:
+        img = client.images.generate(
+            model=image_model,
+            prompt=final_prompt,
+            size=image_resolution,
+        )
+
+        end_ts = _utc_now_iso()
+
+        log_openai_call(
+            call_type="generate_image",
+            model=image_model,
+            payload={"resolution": image_resolution},
+            start_ts=start_ts,
+            end_ts=end_ts,
+            status="success",
+        )
+
+    except Exception as e:
+        end_ts = _utc_now_iso()
+        log_openai_call(
+            call_type="generate_image",
+            model=image_model,
+            payload={"resolution": image_resolution},
+            start_ts=start_ts,
+            end_ts=end_ts,
+            status="error",
+            error=str(e),
+        )
+        raise
+
     if progress_cb:
         progress_cb(70, "Image generated, saving file")
     b64 = img.data[0].b64_json
@@ -489,7 +648,7 @@ class GenerateBookWorker(QRunnable):
 
     def run(self):
         try:
-            self.signals.progress.emit(10, "Starting...")
+            self.signals.progress.emit(0, "Starting batches (0%)")
             rows = generate_illustrations(
                 self.client,
                 self.spec,
@@ -504,6 +663,18 @@ class GenerateBookWorker(QRunnable):
             self.signals.err.emit(str(e))
 
 
+def _next_error_filename(base_dir: Path, image_id: str) -> Path:
+    """
+    Find next error file name:
+    001-error_1.png
+    001-error_2.png
+    """
+    i = 1
+    while True:
+        p = base_dir / f"{image_id}-error_{i}.png"
+        if not p.exists():
+            return p
+        i += 1
 
 
 class GenerateImageWorker(QRunnable):
@@ -530,12 +701,16 @@ class GenerateImageWorker(QRunnable):
 
             # --- BASE PROMPTS ---
             prompt = (
-                "PURE WHITE BACKGROUND. BLACK INK LINE ART ONLY. NO BACKGROUND FILL.\n\n"
-                f"{GLOBAL_POSITIVE_GUARDRAILS}\n\n"
-                f"{self.row.Prompt_final}"
+                self.row.Prompt_final
+                + "\n\nMANDATORY FINAL CHECK:\n"
+                "- Composition MUST touch ALL four edges.\n"
+                "- No empty margins.\n"
+                "- Foreground elements MUST be cropped by page edges.\n"
             )
 
-            negative = f"{self.row.Prompt_negativo}\n\n{GLOBAL_NEGATIVE_GUARDRAILS}"
+            negative = self.row.Prompt_negativo
+
+            negative = f"{self.row.Prompt_negativo}"
 
 
             # --- A4.4: Inject rejection reason if regenerating ---
@@ -564,24 +739,6 @@ class GenerateImageWorker(QRunnable):
                 image_resolution=self.image_resolution,
                 progress_cb=lambda p, m: self.signals.progress.emit(p, m),
             )
-
-            issues = qc_detect_black_bg_or_frame(out_path)
-            if issues:
-                # auto-reject + delete bad image so it remains pending
-                self.row.approval_status = "rejected"
-                auto_reason = "[AUTO-QC]\n" + "\n".join(f"- {x}" for x in issues)
-                if self.row.rejection_reason.strip():
-                    self.row.rejection_reason = f"{auto_reason}\n\n{self.row.rejection_reason}".strip()
-                else:
-                    self.row.rejection_reason = auto_reason
-
-                try:
-                    out_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-                raise RuntimeError("Auto-QC failed: " + " | ".join(issues))
-
             self.signals.ok.emit(str(out_path))
 
         except Exception as e:
@@ -631,7 +788,7 @@ class BlockingOverlay(QFrame):
         """)
         self.bar.setRange(0, 100)
         layout.addWidget(self.bar)
-    def start_indeterminate(self, text="🤖 AI is thinking…"):
+    def start_indeterminate(self, text="🤖 AI is thinking…🤖"):
         self._lock_label = True
         self.label.setText(text)
         self.bar.setRange(0, 0)   # barra animada
@@ -1070,6 +1227,7 @@ class BatchImageGenerationDialog(QDialog):
         self.rows = rows
         self.total = len(rows)
         self.current = 0
+        self.visual_index = -1   # índice realmente mostrado en pantalla
         self.stop_requested = False
 
         self.setWindowTitle("Generating pending images")
@@ -1132,21 +1290,38 @@ class BatchImageGenerationDialog(QDialog):
         self.btn_stop.setText("Stopping…")
     def _update_ui(self):
         row = self.rows[self.current]
+
         self.lbl_progress.setText(
             f"Generating {self.current + 1} / {self.total}"
         )
+
         self.progress.setValue(self.current)
 
-        self.txt_info.setPlainText(
-            f"ID: {row.ID}\n"
-            f"Country: {row.Pais_Region}\n"
-            f"Monument: {row.Monumento}\n\n"
-            f"{row.Comentario_editorial}"
-        )
+        # Si aún no hay imagen mostrada, mostramos estado pending
+        if self.visual_index < 0:
+            info_text = (
+                "ID: pending\n"
+                "Country: pending\n"
+                "Monument: pending\n\n"
+                "Waiting for first image..."
+            )
+        else:
+            vrow = self.rows[self.visual_index]
+            info_text = (
+                f"ID: {vrow.ID}\n"
+                f"Country: {vrow.Pais_Region}\n"
+                f"Monument: {vrow.Monumento}\n\n"
+                f"{vrow.Comentario_editorial}\n\n"
+                f"--- FINAL PROMPT ---\n{vrow.Prompt_final}"
+            )
+
+        self.txt_info.setPlainText(info_text)
+
     def _start_current(self):
         self.lbl_generating.show()
         self.progress_local.show()
         row = self.rows[self.current]
+        
 
         image_model = self.parent_window.get_selected_image_model()
         image_resolution = self.parent_window.get_selected_image_resolution()
@@ -1165,6 +1340,7 @@ class BatchImageGenerationDialog(QDialog):
     def _on_image_done(self, out_path: str):
         self.lbl_generating.hide()
         self.progress_local.hide()
+
         self.scene.clear()
         pix = QPixmap(out_path)
         self.scene.addPixmap(pix)
@@ -1172,10 +1348,17 @@ class BatchImageGenerationDialog(QDialog):
             self.scene.itemsBoundingRect(),
             Qt.KeepAspectRatio,
         )
+
         row = self.rows[self.current]
+
+        # 🔴 SINCRONIZAR LO QUE SE VE CON LO QUE SE ESCRIBE
+        self.visual_index = self.current
+        self._update_ui()
+
         self.parent_window.on_save_project(silent=True)
 
         self.progress.setValue(self.current + 1)
+
         for r_idx, r in enumerate(self.parent_window.rows):
             if r.ID == row.ID:
                 item = QTableWidgetItem()
@@ -1185,32 +1368,233 @@ class BatchImageGenerationDialog(QDialog):
                 self.parent_window.table.setItem(r_idx, 0, item)
                 break
 
-        if self.stop_requested:
-            QMessageBox.information(
-                self,
-                "Generation stopped",
-                f"Stopped after {self.current + 1} images.",
-            )
-            self.accept()
-            return
-
-        self.current += 1
-        if self.current >= self.total:
-            QMessageBox.information(
-                self,
-                "Done",
-                "All pending images have been generated.",
-            )
-            self.accept()
-            return
-
-        self._update_ui()
-        self._start_current()
     def _on_error(self, msg: str):
         self.lbl_generating.hide()
         self.progress_local.hide()
         QMessageBox.critical(self, "Error", msg)
         self.accept()
+
+class StatsDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+        self.setWindowTitle("📊 OpenAI Statistics")
+        self.resize(1400, 900)
+
+        self._Figure = Figure
+        self._FigureCanvas = FigureCanvas
+
+        root = QVBoxLayout(self)
+
+        # ======================
+        # FILTER BAR
+        # ======================
+        filter_bar = QHBoxLayout()
+
+        self.cb_type = QComboBox()
+        self.cb_model = QComboBox()
+        self.cb_status = QComboBox()
+        self.cb_status.addItems(["All status", "success", "error"])
+
+        btn_refresh = QPushButton("Refresh")
+        btn_refresh.clicked.connect(self.load_data)
+
+        filter_bar.addWidget(QLabel("Type"))
+        filter_bar.addWidget(self.cb_type)
+        filter_bar.addWidget(QLabel("Model"))
+        filter_bar.addWidget(self.cb_model)
+        filter_bar.addWidget(QLabel("Status"))
+        filter_bar.addWidget(self.cb_status)
+        filter_bar.addStretch()
+        filter_bar.addWidget(btn_refresh)
+
+        root.addLayout(filter_bar)
+
+        # ======================
+        # TABLE
+        # ======================
+        self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+
+        self.table.setStyleSheet("""
+            QTableWidget { font-size:12px; }
+            QHeaderView::section {
+                background-color:#2b2b2b;
+                color:white;
+                font-weight:bold;
+                padding:6px;
+                border:none;
+            }
+        """)
+
+        root.addWidget(self.table, 3)
+
+        # ======================
+        # COUNTER AREA + PIES
+        # ======================
+        self.figure_top = self._Figure()
+        self.canvas_top = self._FigureCanvas(self.figure_top)
+        root.addWidget(self.canvas_top, 2)
+
+        # ======================
+        # GRANULARITY SELECTOR
+        # ======================
+        gran_layout = QHBoxLayout()
+        gran_layout.addWidget(QLabel("Time view:"))
+
+        self.cb_granularity = QComboBox()
+        self.cb_granularity.addItems(["Day", "Week", "Hour", "Minute"])
+        self.cb_granularity.currentIndexChanged.connect(self.load_data)
+
+        gran_layout.addWidget(self.cb_granularity)
+        gran_layout.addStretch()
+
+        root.addLayout(gran_layout)
+
+        # ======================
+        # LINE CHART
+        # ======================
+        self.figure_bottom = self._Figure()
+        self.canvas_bottom = self._FigureCanvas(self.figure_bottom)
+        root.addWidget(self.canvas_bottom, 3)
+
+        # LOADING LABEL
+        self.loading_label = QLabel("⏳ Loading statistics…")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.loading_label)
+
+        QTimer.singleShot(100, self.load_data)
+
+    # ==================================================
+    def load_data(self):
+        import pandas as pd
+
+        self.loading_label.show()
+        QApplication.processEvents()
+
+        if not OPENAI_LOG_CSV.exists():
+            QMessageBox.information(self, "No logs", "No log file found.")
+            self.loading_label.hide()
+            return
+
+        df = pd.read_csv(OPENAI_LOG_CSV)
+
+        # ===== Filters populate
+        self.cb_type.clear()
+        self.cb_type.addItem("All types")
+        self.cb_type.addItems(sorted(df["type"].dropna().unique()))
+
+        self.cb_model.clear()
+        self.cb_model.addItem("All models")
+        self.cb_model.addItems(sorted(df["model"].dropna().unique()))
+
+        # ===== Apply filters
+        if self.cb_type.currentText() != "All types":
+            df = df[df["type"] == self.cb_type.currentText()]
+
+        if self.cb_model.currentText() != "All models":
+            df = df[df["model"] == self.cb_model.currentText()]
+
+        if self.cb_status.currentText() != "All status":
+            df = df[df["status"] == self.cb_status.currentText()]
+
+        # ======================
+        # TABLE
+        # ======================
+        self.table.setRowCount(len(df))
+        self.table.setColumnCount(len(df.columns))
+        self.table.setHorizontalHeaderLabels(df.columns.tolist())
+
+        for r in range(len(df)):
+            for c, col in enumerate(df.columns):
+                self.table.setItem(r, c, QTableWidgetItem(str(df.iloc[r][col])))
+
+        self.table.resizeColumnsToContents()
+
+        # ======================
+        # TOP CHARTS (Pies + counters)
+        # ======================
+        self.figure_top.clear()
+
+        ax1 = self.figure_top.add_subplot(131)
+        ax2 = self.figure_top.add_subplot(132)
+        ax3 = self.figure_top.add_subplot(133)
+
+        # Pie success/error
+        df["status"].value_counts().plot(
+            kind="pie",
+            autopct="%1.0f%%",
+            colors=["#00C853", "#FF5252"],
+            ax=ax1,
+        )
+        ax1.set_ylabel("")
+        ax1.set_title("Success vs Error")
+
+        # Pie endpoints
+        df["type"].value_counts().plot(
+            kind="pie",
+            autopct="%1.0f%%",
+            colors=["#2962FF", "#00BFA5"],
+            ax=ax2,
+        )
+        ax2.set_ylabel("")
+        ax2.set_title("Endpoint usage")
+
+        # COUNTERS PANEL
+        total_calls = len(df)
+        image_calls = len(df[df["type"] == "generate_image"])
+        text_calls = len(df[df["type"] == "generate_book_batch"])
+
+        ax3.axis("off")
+        ax3.text(
+            0.1, 0.7,
+            f"Total calls: {total_calls}\n\nText API: {text_calls}\nImage API: {image_calls}",
+            fontsize=14,
+            weight="bold",
+        )
+
+        self.figure_top.tight_layout()
+        self.canvas_top.draw()
+
+        # ======================
+        # LINE CHART (granularity)
+        # ======================
+        self.figure_bottom.clear()
+        ax = self.figure_bottom.add_subplot(111)
+
+        df["timestamp_start"] = pd.to_datetime(df["timestamp_start"], errors="coerce")
+
+        gran = self.cb_granularity.currentText()
+
+        if gran == "Day":
+            rule = "D"
+        elif gran == "Week":
+            rule = "W"
+        elif gran == "Hour":
+            rule = "H"
+        else:
+            rule = "T"
+
+        df.set_index("timestamp_start").resample(rule).size().plot(
+            ax=ax,
+            linewidth=2.8,
+            marker="o",
+            color="#00BFA5"
+        )
+
+        ax.set_title(f"Calls over time ({gran})")
+        ax.grid(True, alpha=0.2)
+
+        self.figure_bottom.tight_layout()
+        self.canvas_bottom.draw()
+
+        self.loading_label.hide()
 
 
 class MainWindow(QMainWindow):
@@ -1400,6 +1784,9 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         else:
             self._refresh_requirement(which)
+    def on_open_stats(self):
+        dlg = StatsDialog(self)
+        dlg.exec()
 
     def on_export_xls(self):
         if not getattr(self, "editorial_frozen", False):
@@ -1535,6 +1922,12 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         archivo_menu = menubar.addMenu("Archivo")
         acciones_menu = menubar.addMenu("Acciones")
+        stats_menu = menubar.addMenu("Estadísticas")
+
+        self.action_stats = QAction("OpenAI Statistics", self)
+        self.action_stats.triggered.connect(self.on_open_stats)
+        stats_menu.addAction(self.action_stats)
+
 
         # Archivo actions
         self.action_crear_nuevo_libro = QAction("Crear nuevo libro", self)
@@ -1696,7 +2089,7 @@ class MainWindow(QMainWindow):
         self.sp_num.setValue(50)
 
         self.ed_tamano = QLineEdit("8.5x11")
-        self.ed_aspect = QLineEdit("4:5")
+        self.ed_aspect = QLineEdit("22:17")
 
         self.cb_dif_ini = QComboBox()
         self.cb_dif_ini.addItems(["Bajo", "Medio", "Alto", "Extremo"])
@@ -1984,7 +2377,7 @@ class MainWindow(QMainWindow):
             self.ed_tipo.setText(spec.get("tipo_imagenes", ""))
             self.sp_num.setValue(spec.get("numero_imagenes", 0))
             self.ed_tamano.setText(spec.get("tamano_libro", "8.5x11"))
-            self.ed_aspect.setText(spec.get("aspect_ratio", "4:5"))
+            self.ed_aspect.setText(spec.get("aspect_ratio", "22:17"))
             self.cb_dif_ini.setCurrentText(spec.get("dificultad_inicial", "Bajo"))
             self.cb_dif_fin.setCurrentText(spec.get("dificultad_final", "Alto"))
             self.cb_idioma.setCurrentText(spec.get("idioma_texto", "es"))
@@ -2005,7 +2398,7 @@ class MainWindow(QMainWindow):
             else:
                 self.cb_image_model.setCurrentIndex(0)
 
-            image_resolution = spec.get("image_resolution", "Testing (1024 x 1024)")
+            image_resolution = spec.get("image_resolution", "Working (1024 x 1536)")
             idx = self.cb_image_resolution.findText(image_resolution)
             if idx != -1:
                 self.cb_image_resolution.setCurrentIndex(idx)
@@ -2169,6 +2562,9 @@ class MainWindow(QMainWindow):
 
         if not silent:
             QMessageBox.information(self, "Saved", "Project saved successfully.")
+        self.validate_form()
+        self._refresh_action_states()
+
 
     def reset_project_state(self):
         self.project_dir = None
@@ -2343,7 +2739,7 @@ class MainWindow(QMainWindow):
         self.btn_generate_book.setEnabled(False)
         text_model = self.get_selected_text_model()
         self.lbl_status.setText("Generating book table via OpenAI...")
-        self.overlay.start_indeterminate("🤖 AI is generating the book…")
+        self.overlay.start_indeterminate("🤖 AI is generating the book…🤖")
         self._lock_ui()
 
         worker = GenerateBookWorker(
@@ -2355,6 +2751,7 @@ class MainWindow(QMainWindow):
         )
         worker.signals.ok.connect(self.on_book_generated)
         worker.signals.err.connect(self.on_worker_error)
+        worker.signals.progress.connect(self.overlay.update)
         self.pool.start(worker)
 
     def _apply_row_color(self, row_idx: int, status: str):
@@ -2510,7 +2907,7 @@ class MainWindow(QMainWindow):
         row = self.rows[row_idx]
 
         self.overlay.start_indeterminate(
-            f"Generating image {row.ID}…"
+            f"🤖Generating image {row.ID}…🤖"
         )
 
         worker = GenerateImageWorker(

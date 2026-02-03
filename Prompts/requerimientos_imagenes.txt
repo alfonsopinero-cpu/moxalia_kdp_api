@@ -1,0 +1,77 @@
+EDITORIAL PRIORITY RULE (NON-NEGOTIABLE)
+All rules below are mandatory and override any other instruction.
+
+GLOBAL PURPOSE
+This is a PRINT coloring book for Amazon KDP.
+The output MUST be black-and-white line art, fully colorable.
+
+FORMAT & CANVAS
+- Vertical orientation only.
+- Single illustration per page.
+- Full-page immersive composition.
+- Drawing must visually reach ALL page edges.
+- No floating centered objects.
+
+BACKGROUND (CRITICAL)
+- PURE WHITE background (#FFFFFF).
+- No black or grey backgrounds.
+- Never invert colors.
+- No filled backgrounds.
+
+LINE STYLE (STRICT)
+- Black lines ONLY (#000000).
+- Outlines only.
+- No fills.
+- No silhouettes.
+- No grayscale.
+- No shading.
+- No gradients.
+- No textures.
+- No cross-hatching.
+
+COMPOSITION & IMMERSION
+- Viewer must feel INSIDE the scene.
+- Human-scale POV only.
+- Street, park, path, square, riverbank or bridge perspective.
+- NEVER aerial or postcard framing.
+
+FOREGROUND ANCHOR (MANDATORY)
+- Elements entering from BOTTOM edge.
+- Must be partially cropped by frame.
+
+BORDERS RULE
+- Scene must touch ALL edges.
+- NO rectangular frames or borders.
+- Foreground MUST include large cropped objects touching left, right and bottom edges (plants, furniture or people).
+- No empty foreground allowed.
+
+SKY RULE
+- Max 20% sky.
+- Sky must contain line elements some but not all (clouds, birds, sun, moon, airplanes).
+- Top edge must include architecture or vegetation.
+
+ARCHITECTURE
+- Realistic proportions.
+- Recognizable monuments.
+- Real surroundings to the monuments
+- Clean line work.
+
+NATURE
+- Vegetation open-line style.
+- Mountains with contour lines only.
+- Water with line motion only.
+
+PEOPLE
+- Secondary presence only.
+- Natural behavior.
+
+CORE PRINCIPLE
+We do not draw monuments.
+We draw scenes where the reader ENTERS the place.
+
+PROHIBITED CONTENT
+- No text.
+- No logos.
+- No numbers.
+- No signatures.
+- No decorative borders.

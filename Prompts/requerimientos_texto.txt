@@ -1,0 +1,31 @@
+EDITORIAL TEXT REQUIREMENTS (MANDATORY)
+
+Generate a short poetic editorial text inspired by the illustrated scene.
+
+LANGUAGE
+The editorial text MUST be written in the language defined in the book input.
+
+LENGTH
+- Between 5 and 10 lines.
+
+TONE
+- Reflective
+- Calm
+- Evocative
+- Timeless
+
+CONTENT RULES
+- Emotional connection with the place.
+- Focus on atmosphere and feelings.
+- Sensory language allowed (light, air, water, silence, distance).
+
+STRICT PROHIBITIONS
+- No historical facts.
+- No architectural explanations.
+- No educational tone.
+- No dates or names.
+
+STYLE
+- Poetic prose.
+- Natural flowing sentences.
+- Not rhymed poetry.

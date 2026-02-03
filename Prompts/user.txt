@@ -1,0 +1,126 @@
+BOOK CONTEXT (Dynamic Input)
+
+Each object MUST contain EXACTLY these keys:
+
+* "Categoria"
+* "Publico"
+* "Pais_Region"
+* "Monumento"
+* "Main_foco"
+* "Comentario_editorial"
+* "Prompt_final"
+* "Prompt_negativo"
+
+Do not add extra keys.
+Do not rename fields.
+
+GOAL
+
+Create a coherent list of immersive scenes for a coloring book.
+
+SCENE RULES
+
+* One country per illustration.
+* One main monument per scene.
+* Scenes must feel immersive and human-scale.
+* Avoid repeating the same monument.
+* Distribute countries naturally across the book.
+
+BLOCKED COUNTRIES RULE
+
+The following countries are forbidden for this batch:
+
+{blocked_countries}
+
+You MUST NOT use them.
+
+ALREADY GENERATED IN THIS BOOK (Dynamic Input)
+
+Already used monuments (DO NOT repeat any of them):
+
+{used_monuments}
+
+Country usage so far (country -> count):
+
+{country_counts}
+
+Countries blocked because they already reached the max allowed count:
+
+{blocked_countries}
+
+PROMPT GENERATION
+
+For each illustration generate ONLY one final prompt.
+
+Prompt_final must:
+
+* Integrate ALL editorial image requirements.
+* Explicitly enforce full-bleed composition.
+* Describe immersive foreground elements.
+* Specify architectural detail density.
+* Avoid minimal or generic descriptions.
+
+Prompt_final is the ONLY production prompt.
+No intermediate prompts exist.
+
+EDITORIAL TEXT
+
+Generate a poetic editorial text following the editorial text requirements file.
+Write it ONLY in the book language.
+
+---
+
+BOOK SPEC:
+{book_spec}
+
+EDITORIAL IMAGE REQUIREMENTS:
+{req_img}
+
+EDITORIAL TEXT REQUIREMENTS:
+{req_txt}
+
+---
+
+BATCH RULE (STRICT — DO NOT BREAK)
+
+You MUST generate EXACTLY {batch_size} rows.
+Not more.
+Not less.
+Never return the full book.
+Never exceed the batch size.
+
+If you generate a different number of rows, the system will reject the batch.
+
+The JSON array must contain ONLY the illustration objects.
+No explanations.
+No text outside JSON.
+
+OUTPUT FORMAT (STRICT JSON STRUCTURE)
+
+SINGLE ITEM BATCH RULE (VERY IMPORTANT):
+
+When batch_size = 1 you STILL MUST return:
+
+[
+{{
+"Categoria": "...",
+"Publico": "...",
+"Pais_Region": "...",
+"Monumento": "...",
+"Main_foco": "...",
+"Comentario_editorial": "...",
+"Prompt_final": "...",
+"Prompt_negativo": "..."
+}}
+]
+
+Never return a single object without brackets.
+Never return text outside JSON.
+
+CRITICAL OUTPUT FORMAT
+
+Return ONLY valid JSON.
+No explanations.
+No markdown.
+No code fences.
+No text before or after the JSON array.
