@@ -73,6 +73,20 @@ OPENAI_LOG_CSV = LOGS_DIR / "openai_calls_log.csv"
 OPENAI_LOG_CSV_V2 = LOGS_DIR / "openai_calls_log_v2.csv"
 PRICING_VERSION = "2026-02"
 
+OPENAI_CALL_COUNTER = {
+    "total": 0,
+    "text": 0,
+    "image": 0,
+}
+
+def register_openai_call(call_type: str) -> None:
+    OPENAI_CALL_COUNTER["total"] += 1
+
+    if call_type == "text":
+        OPENAI_CALL_COUNTER["text"] += 1
+    elif call_type == "image":
+        OPENAI_CALL_COUNTER["image"] += 1
+
 STATE_PATH = Path.cwd() / "book_state.json"
 
 PROJECTS_DIR = Path.cwd() / "projects"
@@ -480,7 +494,12 @@ def generate_illustrations(
 
     total = spec.numero_imagenes
     batch_size = 5
-    num_batches = (total + batch_size - 1) // batch_size
+    MAX_EXTRA_BATCHES = 10
+    planned_batches = (total + batch_size - 1) // batch_size
+    max_batches = planned_batches + MAX_EXTRA_BATCHES
+
+    b = 0
+    attempted_rows = 0
 
     rows_acc: List[IllustrationRow] = []
     system = SYSTEM_PATH.read_text(encoding="utf-8")
@@ -494,15 +513,18 @@ def generate_illustrations(
     geo_counter: dict[str, int] = {}
     MAX_PER_GEO = 4
 
-    for b in range(num_batches):
-        start_idx = b * batch_size
-        n = min(batch_size, total - start_idx)
+    while len(rows_acc) < total and b < max_batches:
+        n = min(batch_size, total - len(rows_acc))
         # 🔵 PROGRESS: inicio de batch
+        register_openai_call("text")
         if progress_cb:
+            pct = int((len(rows_acc) / total) * 100)
             progress_cb(
-                int((b / num_batches) * 100),
-                f"Generating batch {b+1}/{num_batches}"
+                pct,
+                f"Generating illustrations ({len(rows_acc)} / {total}) "
+                f"| OpenAI calls: {OPENAI_CALL_COUNTER['total']}"
             )
+
 
 
         user = user_template.format(
@@ -531,8 +553,9 @@ def generate_illustrations(
 
         request_id = str(uuid.uuid4())
         start_ts = _utc_now_iso()
-
+        
         try:
+            
             r = client.chat.completions.create(
                 model=text_model,
                 messages=[
@@ -582,7 +605,7 @@ def generate_illustrations(
 
         data = _extract_json(r.choices[0].message.content)
         data = _validate_batch_rows(data, n)
-
+        attempted_rows += len(data)
         for obj in data:
             monument = obj["Monumento"].strip()
             geo = obj["Pais_Region"].strip()
@@ -621,9 +644,11 @@ def generate_illustrations(
 
     if len(rows_acc) < total:
         raise RuntimeError(
-            f"Generated only {len(rows_acc)} rows out of {total}. "
-            "Model output filtered too aggressively."
+            f"Could only generate {len(rows_acc)}/{total} valid illustrations "
+            f"after {b} batches ({attempted_rows} attempted rows). "
+            f"Filters too restrictive or model not complying."
         )
+
     # =========================
     # ASSIGN DIFFICULTY SEQUENCE
     # =========================
@@ -639,6 +664,24 @@ def generate_illustrations(
         row.Line_thickness_L = diff["L"]
         row.White_space_W = diff["W"]
         row.Complexity_C = diff["C"]
+        row.Prompt_final = inject_difficulty(
+            row.Prompt_final,
+            {
+                "block": row.Difficulty_block,
+                "line_thickness": row.Line_thickness_L,
+                "white_space": row.White_space_W,
+                "complexity": row.Complexity_C,
+            }
+        )
+        
+    print(
+        f"[BOOK GENERATION SUMMARY] "
+        f"Requested: {total} | "
+        f"Generated valid: {len(rows_acc)} | "
+        f"Attempted rows: {attempted_rows} | "
+        f"Batches executed: {b} "
+        f"(planned {planned_batches} + extra {max(0, b - planned_batches)})"
+    )
 
     return rows_acc
 
@@ -657,22 +700,29 @@ def generate_image_png(
 
 
     final_prompt = f"{prompt}\n\nNEGATIVE PROMPT:\n{negative}"
-
+    
     request_id = str(uuid.uuid4())
     start_ts = _utc_now_iso()
+    
 
     try:
+        register_openai_call("image")
 
-        img = client.images.generate(
-            model=image_model,
-            prompt=final_prompt,
-            size=image_resolution,
-            quality=image_quality,
-        )
+        if progress_cb:
+            progress_cb(
+                0,
+                f"Generating image… | OpenAI calls: {OPENAI_CALL_COUNTER['total']}"
+            )
+            img = client.images.generate(
+                model=image_model,
+                prompt=final_prompt,
+                size=image_resolution,
+                quality=image_quality,
+            )
 
 
         end_ts = _utc_now_iso()
-
+    
         log_openai_call_v2(
             request_id=request_id,
             call_type="generate_image",
@@ -690,6 +740,9 @@ def generate_image_png(
         )
 
         out_path.write_bytes(base64.b64decode(img.data[0].b64_json))
+
+        if progress_cb:
+            progress_cb(100, "Image generated")
 
     except Exception as e:
         end_ts = _utc_now_iso()
@@ -861,6 +914,26 @@ def estimate_book_cost(
         "total_cost": round(text_cost + image_cost, 4),
     }
 
+def inject_difficulty(prompt_final: str, difficulty: dict) -> str:
+    """
+    Injects deterministic difficulty constraints into a Prompt_final.
+    """
+
+    difficulty_block = difficulty["block"]          # low / medium / high / extreme
+    line_thickness = difficulty["line_thickness"]   # e.g. thick / thin / very thin
+    white_space = difficulty["white_space"]         # e.g. high / medium / minimal
+    complexity = difficulty["complexity"]           # e.g. simple / complex / very complex
+
+    difficulty_instructions = f"""
+DIFFICULTY CONSTRAINTS (MANDATORY)
+- Overall difficulty level: {difficulty_block}.
+- Line thickness: {line_thickness} black outlines only.
+- White space: {white_space} areas, increasing coloring challenge.
+- Structural complexity: {complexity}, with corresponding amount of details.
+These constraints are mandatory and override any ambiguity.
+"""
+
+    return f"{prompt_final.strip()}\n\n{difficulty_instructions.strip()}"
 
 class GenerateImageWorker(QRunnable):
     def __init__(
@@ -2924,6 +2997,7 @@ class MainWindow(QMainWindow):
         self.load_project(project_dir)
 
     def load_project(self, project_dir):
+        
         from PySide6.QtWidgets import QMessageBox
 
         import json
@@ -2931,6 +3005,7 @@ class MainWindow(QMainWindow):
         book_json_p = project_dir / "book.json"
         illus_json_p = project_dir / "illustrations.json"
         images_dir = project_dir / "images"
+        image_resolution = None
 
         # Parse book.json
         try:
@@ -2986,9 +3061,17 @@ class MainWindow(QMainWindow):
             else:
                 self.cb_image_model.setCurrentIndex(0)
 
+            # 🔴 FIX: restaurar resolución DESPUÉS de que el modelo haya cargado sus tamaños
+            if image_resolution:
+                idx_res = self.cb_image_resolution.findText(image_resolution)
+                if idx_res != -1:
+                    self.cb_image_resolution.setCurrentIndex(idx_res)
 
 
-            image_resolution = spec.get("image_resolution", "Working (1024 x 1536)")
+
+            image_settings = book_data.get("image_settings", {})
+            image_resolution = image_settings.get("image_resolution")
+
             idx = self.cb_image_resolution.findText(image_resolution)
             if idx != -1:
                 self.cb_image_resolution.setCurrentIndex(idx)
