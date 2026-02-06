@@ -42,16 +42,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QIcon, QPixmap, QColor, QBrush, QCursor, QDesktopServices, QAction, QPainter, QWheelEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtCore import QUrl
+from datetime import datetime
 
 # =========================
 # CONFIG
 # =========================
 load_dotenv()
 
-IMAGE_RESOLUTIONS = {
-    "Working (1024 x 1536)": "1024x1536",
-    "Final KDP (2550 x 3300)": "2550x3300",
-}
+
 PROMPTS_DIR = Path.cwd() / "prompts"
 
 REQ_IMAGENES_PATH = PROMPTS_DIR / "requerimientos_imagenes.txt"
@@ -66,21 +64,52 @@ DEFAULT_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5")
 OUT_DIR = Path.cwd() / "illustraciones"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+
 LOGS_DIR = Path.cwd() / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 OPENAI_LOG_CSV = LOGS_DIR / "openai_calls_log.csv"
 
+OPENAI_LOG_CSV_V2 = LOGS_DIR / "openai_calls_log_v2.csv"
+PRICING_VERSION = "2026-02"
 
 STATE_PATH = Path.cwd() / "book_state.json"
 
 PROJECTS_DIR = Path.cwd() / "projects"
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
+IMAGE_MODEL_CAPABILITIES = {
+    "gpt-image-1": {
+        "qualities": ["low", "medium", "high"],
+        "sizes": ["1024x1024", "1024x1536", "1536x1024"],
+        "default_quality": "low",
+        "default_size": "1024x1536",
+    },
+    "gpt-image-1-mini": {
+        "qualities": ["low", "medium", "high"],
+        "sizes": ["1024x1024", "1024x1536", "1536x1024"],
+        "default_quality": "low",
+        "default_size": "1024x1536",
+    },
+    "gpt-image-1.5": {
+        "qualities": ["low", "medium", "high"],
+        "sizes": ["1024x1024", "1024x1536", "1536x1024"],
+        "default_quality": "low",
+        "default_size": "1024x1536",
+    },
+    "dall-e-3": {
+        "qualities": ["standard", "hd"],
+        "sizes": ["1024x1024", "1024x1792", "1792x1024"],
+        "default_quality": "standard",
+        "default_size": "1024x1792",
+    },
+}
 
 # =========================
 # DATA MODELS
 # =========================
+from typing import Literal
+
 class BookSpec(BaseModel):
     book_id: str = Field(..., min_length=1)
     publico: str
@@ -93,6 +122,9 @@ class BookSpec(BaseModel):
     dificultad_inicial: str
     dificultad_final: str
     idioma_texto: str
+
+    image_quality: Literal["low", "medium", "high"] = "low"
+
 
 
 class IllustrationRow(BaseModel):
@@ -144,45 +176,166 @@ def load_requirement_file(path: Path) -> dict:
 # =========================
 # OPENAI HELPERS
 # =========================
+import json
+
+PRICING_PATH = Path("pricing.json")
+
+
+# Load pricing once at startup
+if not PRICING_PATH.exists():
+    raise RuntimeError("pricing.json not found")
+
+with PRICING_PATH.open("r", encoding="utf-8") as f:
+    PRICING_DATA = json.load(f)
+
+
+
+def estimate_cost(
+    *,
+    pricing: dict,
+    model: str,
+    tokens_input: int | None = None,
+    tokens_output: int | None = None,
+    image_size: str | None = None,
+    image_quality: str | None = None,
+) -> float:
+
+
+    models = pricing.get("models", {})
+    if model not in models:
+        return 0.0
+
+    model_cfg = models[model]
+
+    # TEXT MODELS
+    if model_cfg["type"] == "text":
+        if tokens_input is None or tokens_output is None:
+            return 0.0
+
+        return (
+            tokens_input * model_cfg["input_token"]
+            + tokens_output * model_cfg["output_token"]
+        )
+
+    # IMAGE MODELS
+    if model_cfg["type"] == "image":
+        if image_size is None or image_quality is None:
+            return 0.0
+
+        return model_cfg["prices"][image_quality].get(image_size, 0.0)
+
+
+
+    return 0.0
+
+
+import uuid
 import csv
 
-def log_openai_call(
+def log_openai_call_v2(
+    *,
+    request_id: str,
     call_type: str,
     model: str,
-    payload: dict,
     start_ts: str,
     end_ts: str,
     status: str,
+    phase: str,
+    user_action: str,
+    project_id: str | None,
+    book_id: str | None,
+    row_id: str | None,
+    tokens_input: int | None = None,
+    tokens_output: int | None = None,
+    image_size: str | None = None,
+    image_quality: str | None = None,
+    retry_count: int = 0,
+    approval_outcome: str = "na",
+    cost_estimated: float | None = None,
     error: str = "",
 ):
-    file_exists = OPENAI_LOG_CSV.exists()
+    file_exists = OPENAI_LOG_CSV_V2.exists()
 
-    with OPENAI_LOG_CSV.open("a", newline="", encoding="utf-8") as f:
+    latency_ms = (
+        int(
+            (datetime.fromisoformat(end_ts) - datetime.fromisoformat(start_ts))
+            .total_seconds() * 1000
+        )
+        if start_ts and end_ts else None
+    )
+    
+   
+
+    cost_estimated = estimate_cost(
+        pricing=PRICING_DATA,
+        model=model,
+        tokens_input=tokens_input,
+        tokens_output=tokens_output,
+        image_size=image_size,
+        image_quality=image_quality,
+    )
+
+
+
+
+    with OPENAI_LOG_CSV_V2.open("a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
 
         if not file_exists:
             writer.writerow([
                 "timestamp_start",
                 "timestamp_end",
+                "latency_ms",
+                "request_id",
+                "project_id",
+                "book_id",
+                "row_id",
+                "phase",
+                "user_action",
                 "type",
                 "model",
                 "status",
+                "tokens_input",
+                "tokens_output",
+                "image_size",
+                "image_quality",
+                "retry_count",
+                "approval_outcome",
+                "pricing_version",
+                "cost_estimated",
                 "error",
-                "payload",
+
             ])
+
 
         writer.writerow([
             start_ts,
             end_ts,
+            latency_ms,
+            request_id,
+            project_id,
+            book_id,
+            row_id,
+            phase,
+            user_action,
             call_type,
             model,
             status,
+            tokens_input,
+            tokens_output,
+            image_size,
+            image_quality,
+            retry_count,
+            approval_outcome,
+            PRICING_VERSION,
+            cost_estimated,
             error,
-            json.dumps(payload, ensure_ascii=False),
         ])
+
 
 def _extract_json(text: str) -> Any:
     text = text.strip()
+
     try:
         return json.loads(text)
     except Exception:
@@ -277,6 +430,28 @@ def _reorder_no_consecutive_countries(rows: list["IllustrationRow"]) -> list["Il
             if swap_j is not None:
                 rows[i], rows[swap_j] = rows[swap_j], rows[i]
     return rows
+def _norm_scope(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+MULTI_COUNTRY_SCOPES = {
+    # ES
+    "europa", "asia", "america", "américa", "latam", "latinoamerica", "latinoamérica",
+    "norte america", "norteamérica", "sudamerica", "sudamérica", "centroamerica", "centroamérica",
+    "africa", "áfrica", "oceania", "oceanía",
+    "global", "mundial", "mundo", "world", "international", "internacional",
+    "europe", "asia pacific", "apac", "emea", "americas",
+    # EN
+    "europe", "asia", "africa", "oceania", "americas", "north america", "south america",
+    "central america", "latin america", "global", "worldwide"
+}
+
+def _is_single_country_scope(alcance_geografico: str) -> bool:
+    s = _norm_scope(alcance_geografico)
+    if not s:
+        return False
+    # Si es un scope “continente/global”, NO es single-country
+    return s not in MULTI_COUNTRY_SCOPES
+
     
 def monument_importance_score(row: IllustrationRow) -> int:
     name = row.Monumento.lower()
@@ -307,41 +482,54 @@ def generate_illustrations(
     batch_size = 5
     num_batches = (total + batch_size - 1) // batch_size
 
-    if progress_cb:
-        progress_cb(0, f"Starting {num_batches} batches of {batch_size}")
-
     rows_acc: List[IllustrationRow] = []
     system = SYSTEM_PATH.read_text(encoding="utf-8")
     user_template = USER_PATH.read_text(encoding="utf-8")
+
     used_monuments: set[str] = set()
-    country_counter: dict[str, int] = {}
-    MAX_PER_COUNTRY = 3
+
+    single_country_mode = _is_single_country_scope(spec.alcance_geografico)
+    # En multi-country: geo_key = país
+    # En single-country: geo_key = región interna (departamento/estado/comunidad/etc)
+    geo_counter: dict[str, int] = {}
+    MAX_PER_GEO = 4
 
     for b in range(num_batches):
         start_idx = b * batch_size
         n = min(batch_size, total - start_idx)
-
+        # 🔵 PROGRESS: inicio de batch
         if progress_cb:
-            pct = int((start_idx / total) * 90)
-            progress_cb(pct, f"Generating batch {b+1}/{num_batches} ({start_idx}/{total})")
+            progress_cb(
+                int((b / num_batches) * 100),
+                f"Generating batch {b+1}/{num_batches}"
+            )
 
-        blocked_countries = [
-            c for c, count in country_counter.items()
-            if count >= MAX_PER_COUNTRY
-        ]
 
         user = user_template.format(
-            book_spec = json.dumps(spec.model_dump(), ensure_ascii=False, indent=2),
+            book_spec=json.dumps(spec.model_dump(), ensure_ascii=False, indent=2),
             req_img=req_img,
             req_txt=req_txt,
             batch_size=n,
-            blocked_countries=json.dumps(sorted(blocked_countries), ensure_ascii=False),
-            used_monuments=json.dumps(sorted(list(used_monuments)), ensure_ascii=False),
-            country_counts=json.dumps(country_counter, ensure_ascii=False),
+            blocked_countries=json.dumps(
+                [k for k, cnt in geo_counter.items() if cnt >= MAX_PER_GEO],
+                ensure_ascii=False,
+            ),
+            used_monuments=json.dumps(list(used_monuments), ensure_ascii=False),
+            country_counts=json.dumps(geo_counter, ensure_ascii=False),
+
         )
+        if single_country_mode:
+            country_name = spec.alcance_geografico.strip()
+            user += (
+                "\n\nCRITICAL GEOGRAPHY RULE (NON-NEGOTIABLE):\n"
+                f"- This is a SINGLE-COUNTRY book: '{country_name}'.\n"
+                "- The field 'Pais_Region' MUST contain an internal region within that country "
+                "(state/department/province/community/area), NOT the country name.\n"
+                "- Do NOT repeat the same region more than allowed.\n"
+            )
 
 
-
+        request_id = str(uuid.uuid4())
         start_ts = _utc_now_iso()
 
         try:
@@ -355,213 +543,175 @@ def generate_illustrations(
             )
 
             end_ts = _utc_now_iso()
+            usage = r.usage
 
-            log_openai_call(
+            log_openai_call_v2(
+                request_id=request_id,
                 call_type="generate_book_batch",
                 model=text_model,
-                payload={"batch_size": n},
                 start_ts=start_ts,
                 end_ts=end_ts,
                 status="success",
+                phase="book_planning",
+                user_action="batch",
+                project_id=spec.book_id,
+                book_id=spec.book_id,
+                row_id=None,
+                tokens_input=usage.prompt_tokens,
+                tokens_output=usage.completion_tokens,
             )
 
         except Exception as e:
             end_ts = _utc_now_iso()
-            log_openai_call(
+
+            log_openai_call_v2(
+                request_id=request_id,
                 call_type="generate_book_batch",
                 model=text_model,
-                payload={"batch_size": n},
                 start_ts=start_ts,
                 end_ts=end_ts,
                 status="error",
+                phase="book_planning",
+                user_action="batch",
+                project_id=spec.book_id,
+                book_id=spec.book_id,
+                row_id=None,
                 error=str(e),
             )
             raise
 
-
-        raw = r.choices[0].message.content
-        data = _extract_json(raw)
+        data = _extract_json(r.choices[0].message.content)
         data = _validate_batch_rows(data, n)
-
-        accepted = []
 
         for obj in data:
             monument = obj["Monumento"].strip()
-            country = obj["Pais_Region"].strip()
+            geo = obj["Pais_Region"].strip()
 
-            if monument in used_monuments:
-                continue
-            if country_counter.get(country, 0) >= MAX_PER_COUNTRY:
-                continue
+            # Si es single-country y el modelo devuelve el país en vez de una región: descártalo
+            if single_country_mode:
+                if _norm_scope(geo) == _norm_scope(spec.alcance_geografico):
+                    continue
 
-            accepted.append(obj)
+            if monument in used_monuments or geo_counter.get(geo, 0) >= MAX_PER_GEO:
+                continue  # saltamos pero NO contamos como fila válida
 
-        if len(accepted) < n:
-            raise ValueError(
-                f"Batch {b+1}: only {len(accepted)}/{n} valid items. "
-                "Model violated constraints; retry batch."
-            )
-
-        for obj in accepted:
             row = IllustrationRow(
-                ID="000",
+                ID=f"{len(rows_acc)+1:03d}",
+                Categoria=obj["Categoria"],
+                Publico=obj["Publico"],
+                Pais_Region=geo,
+                Monumento=monument,
+                Main_foco=obj["Main_foco"],
                 Bloque="",
-                Difficulty_block="Bajo",
+                Difficulty_block="",
                 Difficulty_D=0,
                 Line_thickness_L=0.0,
                 White_space_W=0.0,
                 Complexity_C=0.0,
-                Nombre_fichero_editorial="",
-                Nombre_fichero_descargado="",
-                approval_status="pending",
-                rejection_reason="",
                 Prompt_final=obj["Prompt_final"],
                 Prompt_negativo=obj["Prompt_negativo"],
                 Comentario_editorial=obj["Comentario_editorial"],
-                Main_foco=obj["Main_foco"],
-                Categoria=obj["Categoria"],
-                Publico=obj["Publico"],
-                Pais_Region=obj["Pais_Region"],
-                Monumento=obj["Monumento"],
+                Nombre_fichero_editorial="",
+                Nombre_fichero_descargado="",
             )
+
             rows_acc.append(row)
-            used_monuments.add(row.Monumento)
-            country_counter[row.Pais_Region] = country_counter.get(row.Pais_Region, 0) + 1
+            used_monuments.add(monument)
+            geo_counter[geo] = geo_counter.get(geo, 0) + 1
 
-    if progress_cb:
-        progress_cb(92, "Finalizing: reorder countries")
-    rows_acc = _reorder_no_consecutive_countries(rows_acc)
-
-    if progress_cb:
-        progress_cb(95, "Finalizing: assign difficulty + IDs")
-    rows_acc.sort(key=monument_importance_score, reverse=True)
-    difficulty_sequence = build_difficulty_sequence(
-        total=total,
+    if len(rows_acc) < total:
+        raise RuntimeError(
+            f"Generated only {len(rows_acc)} rows out of {total}. "
+            "Model output filtered too aggressively."
+        )
+    # =========================
+    # ASSIGN DIFFICULTY SEQUENCE
+    # =========================
+    difficulty_seq = build_difficulty_sequence(
+        total=len(rows_acc),
         start=spec.dificultad_inicial,
         end=spec.dificultad_final,
     )
-
-    for i, row in enumerate(rows_acc):
-        d = difficulty_sequence[i]
-        row.ID = f"{i+1:03d}"
-        row.Difficulty_D = d["D"]
-        row.Difficulty_block = d["block"]
-        row.Bloque = d["block"] 
-        row.Line_thickness_L = d["L"]
-        row.White_space_W = d["W"]
-        row.Complexity_C = d["C"]
-
-        row.Nombre_fichero_editorial = f"{row.ID}_{_safe_slug(row.Monumento)}"
-        row.Nombre_fichero_descargado = f"{row.ID}_{_safe_slug(row.Monumento)}.png"
-        
-        # =========================
-        # Inject FINAL DIFFICULTY CONTROL into prompt
-        # =========================
-        # --- Difficulty semantic description ---
-        if row.Difficulty_D <= 25:
-            difficulty_text = (
-                "LOW difficulty: few visual elements, large open areas, "
-                "thick clean lines, minimal architectural detail, "
-                "simple foreground composition."
-            )
-        elif row.Difficulty_D <= 50:
-            difficulty_text = (
-                "MEDIUM difficulty: balanced visual density, moderate architectural detail, "
-                "clear separations between elements, medium line weight."
-            )
-        elif row.Difficulty_D <= 75:
-            difficulty_text = (
-                "HIGH difficulty: dense architecture, multiple mid-ground and foreground elements, "
-                "finer lines, smaller colorable zones."
-            )
-        else:
-            difficulty_text = (
-                "EXTREME difficulty: very dense structure, intricate details, "
-                "thin lines, many small independent colorable elements, "
-                "complex layered composition."
-            )
-
-        difficulty_append = (
-            "\n\n--- FINAL DIFFICULTY CONTROL (EDITORIAL — NON NEGOTIABLE) ---\n"
-            f"Difficulty level: {row.Difficulty_block} ({row.Difficulty_D}/100)\n"
-            f"{difficulty_text}\n\n"
-            "You MUST visibly adjust:\n"
-            "- visual density\n"
-            "- number of architectural elements\n"
-            "- foreground complexity\n"
-            "- line thickness and spacing\n"
-            "Difficulty differences MUST be obvious at first glance between pages.\n"
-        )
-
-
-        row.Prompt_final = row.Prompt_final.strip() + difficulty_append
-
-
-
-    if progress_cb:
-        progress_cb(100, "Done")
+    for row, diff in zip(rows_acc, difficulty_seq):
+        row.Difficulty_D = diff["D"]
+        row.Difficulty_block = diff["block"]
+        row.Bloque = diff["block"]
+        row.Line_thickness_L = diff["L"]
+        row.White_space_W = diff["W"]
+        row.Complexity_C = diff["C"]
 
     return rows_acc
 
-
-
 def generate_image_png(
+    *,
     client: OpenAI,
     prompt: str,
     negative: str,
     out_path: Path,
     image_model: str,
+    image_quality: str,
     image_resolution: str,
-    signals=None,
+    project_id: str,
     progress_cb=None,
 ) -> None:
 
-    final_prompt = (
-        f"{prompt}\n\n"
-        f"NEGATIVE PROMPT:\n{negative}"
-    )
 
-    if progress_cb:
-        progress_cb(0, "Starting image generation")
+    final_prompt = f"{prompt}\n\nNEGATIVE PROMPT:\n{negative}"
+
+    request_id = str(uuid.uuid4())
     start_ts = _utc_now_iso()
 
     try:
+
         img = client.images.generate(
             model=image_model,
             prompt=final_prompt,
             size=image_resolution,
+            quality=image_quality,
         )
+
 
         end_ts = _utc_now_iso()
 
-        log_openai_call(
+        log_openai_call_v2(
+            request_id=request_id,
             call_type="generate_image",
             model=image_model,
-            payload={"resolution": image_resolution},
             start_ts=start_ts,
             end_ts=end_ts,
             status="success",
+            phase="image_generation",
+            user_action="single",
+            project_id=project_id,
+            book_id=project_id,
+            row_id=out_path.stem,
+            image_size=image_resolution,
+            image_quality=image_quality,
         )
+
+        out_path.write_bytes(base64.b64decode(img.data[0].b64_json))
 
     except Exception as e:
         end_ts = _utc_now_iso()
-        log_openai_call(
+
+        log_openai_call_v2(
+            request_id=request_id,
             call_type="generate_image",
             model=image_model,
-            payload={"resolution": image_resolution},
             start_ts=start_ts,
             end_ts=end_ts,
             status="error",
+            phase="image_generation",
+            user_action="single",
+            project_id=project_id,
+            book_id=project_id,
+            row_id=out_path.stem,
+            image_size=image_resolution,
             error=str(e),
         )
         raise
 
-    if progress_cb:
-        progress_cb(70, "Image generated, saving file")
-    b64 = img.data[0].b64_json
-    out_path.write_bytes(base64.b64decode(b64))
-    if progress_cb:
-        progress_cb(100, "Image ready")
+
 def qc_detect_black_bg_or_frame(png_path: Path) -> list[str]:
     from PIL import Image
     img = Image.open(png_path).convert("RGB")
@@ -675,6 +825,41 @@ def _next_error_filename(base_dir: Path, image_id: str) -> Path:
         if not p.exists():
             return p
         i += 1
+def estimate_book_cost(
+    *,
+    pricing: dict,
+    text_model: str,
+    image_model: str,
+    image_quality: str,
+    image_resolution: str,
+    num_images: int,
+    batch_size: int = 5,
+    est_tokens_in: int = 3000,
+    est_tokens_out: int = 1000,
+) -> dict:
+    text_calls = (num_images + batch_size - 1) // batch_size
+
+    text_cost = text_calls * estimate_cost(
+        pricing=pricing,
+        model=text_model,
+        tokens_input=est_tokens_in,
+        tokens_output=est_tokens_out,
+    )
+
+    image_cost = num_images * estimate_cost(
+        pricing=pricing,
+        model=image_model,
+        image_quality=image_quality,
+        image_size=image_resolution,
+    )
+
+    return {
+        "text_calls": text_calls,
+        "image_calls": num_images,
+        "text_cost": round(text_cost, 4),
+        "image_cost": round(image_cost, 4),
+        "total_cost": round(text_cost + image_cost, 4),
+    }
 
 
 class GenerateImageWorker(QRunnable):
@@ -683,8 +868,10 @@ class GenerateImageWorker(QRunnable):
         client: OpenAI,
         row: IllustrationRow,
         image_model: str,
+        image_quality: str,
         image_resolution: str,
         images_dir: Path,
+        project_id: str,
     ):
         super().__init__()
         self.client = client
@@ -692,7 +879,9 @@ class GenerateImageWorker(QRunnable):
         self.image_model = image_model
         self.image_resolution = image_resolution
         self.images_dir = images_dir
+        self.project_id = project_id
         self.signals = WorkerSignals()
+        self.image_quality = image_quality
 
     def run(self):
         try:
@@ -701,12 +890,27 @@ class GenerateImageWorker(QRunnable):
 
             # --- BASE PROMPTS ---
             prompt = (
-                self.row.Prompt_final
-                + "\n\nMANDATORY FINAL CHECK:\n"
+                "THIS IS A PRINT COLORING BOOK ILLUSTRATION.\n"
+                "BLACK AND WHITE LINE ART ONLY.\n"
+                "NO SHADING, NO GRAYS, NO FILLS.\n"
+                "PURE WHITE BACKGROUND.\n"
+                "LINES MUST BE CLEAN, CONTINUOUS AND PRINT-SAFE.\n\n"
+
+                "DIFFICULTY PARAMETERS (MANDATORY – DO NOT IGNORE):\n"
+                f"- Difficulty block: {self.row.Difficulty_block}\n"
+                f"- Difficulty score (0–100): {self.row.Difficulty_D}\n"
+                f"- Line thickness (L): {self.row.Line_thickness_L}\n"
+                f"- White space ratio (W): {self.row.White_space_W}\n"
+                f"- Visual complexity (C): {self.row.Complexity_C}\n\n"
+
+                f"{self.row.Prompt_final}\n\n"
+
+                "MANDATORY FINAL CHECK:\n"
                 "- Composition MUST touch ALL four edges.\n"
                 "- No empty margins.\n"
                 "- Foreground elements MUST be cropped by page edges.\n"
             )
+
 
             negative = self.row.Prompt_negativo
 
@@ -736,7 +940,9 @@ class GenerateImageWorker(QRunnable):
                 negative=negative,
                 out_path=out_path,
                 image_model=self.image_model,
+                image_quality=self.image_quality,
                 image_resolution=self.image_resolution,
+                project_id=self.project_id,
                 progress_cb=lambda p, m: self.signals.progress.emit(p, m),
             )
             self.signals.ok.emit(str(out_path))
@@ -1025,6 +1231,21 @@ class ImageReviewDialog(QDialog):
         self.parent_window.on_save_project(silent=True)
         self.reject_reason.clear()
         self._update_status_badge()
+        log_openai_call_v2(
+            request_id=str(uuid.uuid4()),
+            call_type="image_review",
+            model="editorial",
+            start_ts=_utc_now_iso(),
+            end_ts=_utc_now_iso(),
+            status="success",
+            phase="review",
+            user_action="approve",
+            project_id=self.parent_window.current_spec.book_id,
+            book_id=self.parent_window.current_spec.book_id,
+            row_id=self.row.ID,
+            approval_outcome="approved",
+        )
+
         self._go_next()
         if self.current_index == len(self.parent_window.rows) - 1:
           QMessageBox.information(self, "Done", "Last image reviewed.")
@@ -1068,6 +1289,21 @@ class ImageReviewDialog(QDialog):
         self.parent_window._apply_row_color(self.current_index, "rejected")
         self.parent_window.on_save_project(silent=True)
         self._update_status_badge()
+        log_openai_call_v2(
+            request_id=str(uuid.uuid4()),
+            call_type="image_review",
+            model="editorial",
+            start_ts=_utc_now_iso(),
+            end_ts=_utc_now_iso(),
+            status="success",
+            phase="review",
+            user_action="reject",
+            project_id=self.parent_window.current_spec.book_id,
+            book_id=self.parent_window.current_spec.book_id,
+            row_id=self.row.ID,
+            approval_outcome="rejected",
+        )
+
         self._go_next()
         if self.current_index == len(self.parent_window.rows) - 1:
             QMessageBox.information(self, "Done", "Last image reviewed.")
@@ -1330,9 +1566,13 @@ class BatchImageGenerationDialog(QDialog):
             self.parent_window.client,
             row,
             image_model,
+            self.parent_window.current_spec.image_quality,
             image_resolution,
             self.parent_window.images_dir,
+            self.parent_window.current_spec.book_id,
         )
+
+
         worker.signals.ok.connect(self._on_image_done)
         worker.signals.err.connect(self._on_error)
         
@@ -1373,8 +1613,66 @@ class BatchImageGenerationDialog(QDialog):
         self.progress_local.hide()
         QMessageBox.critical(self, "Error", msg)
         self.accept()
+def load_all_books_metadata(projects_dir: Path) -> dict:
+    books = {}
+    for p in projects_dir.iterdir():
+        if not p.is_dir():
+            continue
+        book_json = p / "book.json"
+        if not book_json.exists():
+            continue
+        try:
+            data = json.loads(book_json.read_text(encoding="utf-8"))
+            spec = data.get("spec", {})
+            books[spec.get("book_id")] = {
+                "book_id": spec.get("book_id"),
+                "book_name": spec.get("book_id"),
+                "audience": spec.get("publico"),
+                "num_images": spec.get("numero_imagenes"),
+            }
+        except Exception:
+            continue
+    return books
+
+
+def build_book_summary(df, books_meta):
+    rows = []
+
+    for book_id, meta in books_meta.items():
+        df_b = df[df["book_id"] == book_id]
+
+        img_calls = df_b[df_b["type"] == "generate_image"]
+        txt_calls = df_b[df_b["type"] == "generate_book_batch"]
+
+        rows.append({
+            "Book": meta["book_name"],
+            "Audience": meta["audience"],
+            "Planned images": meta["num_images"],
+            "Text calls": len(txt_calls),
+            "Image calls": len(img_calls),
+            "Text cost": round(txt_calls["cost_estimated"].sum(), 4),
+            "Image cost": round(img_calls["cost_estimated"].sum(), 4),
+            "Total cost": round(df_b["cost_estimated"].sum(), 4),
+            "Approved": len(img_calls[img_calls["approval_outcome"] == "approved"]),
+            "Rejected": len(img_calls[img_calls["approval_outcome"] == "rejected"]),
+            "Errors": len(img_calls[img_calls["status"] == "error"]),
+        })
+
+    return rows
 
 class StatsDialog(QDialog):
+    def _on_book_selected(self):
+        sel = self.books_table.selectionModel().selectedRows()
+        if not sel:
+            self.selected_book_id = None
+            return
+
+        item = self.books_table.item(sel[0].row(), 0)
+        self.selected_book_id = item.data(Qt.UserRole)
+        self.load_data()
+
+
+
     def __init__(self, parent):
         super().__init__(parent)
 
@@ -1386,13 +1684,16 @@ class StatsDialog(QDialog):
 
         self._Figure = Figure
         self._FigureCanvas = FigureCanvas
-
-        root = QVBoxLayout(self)
-
         # ======================
-        # FILTER BAR
+        # GLOBAL FILTER BAR (TOP)
         # ======================
         filter_bar = QHBoxLayout()
+
+        self.cb_book = QComboBox()
+        self.cb_book.addItem("All books")
+
+        self.cb_audience = QComboBox()
+        self.cb_audience.addItem("All audiences")
 
         self.cb_type = QComboBox()
         self.cb_model = QComboBox()
@@ -1402,16 +1703,36 @@ class StatsDialog(QDialog):
         btn_refresh = QPushButton("Refresh")
         btn_refresh.clicked.connect(self.load_data)
 
+        filter_bar.addWidget(QLabel("Book"))
+        filter_bar.addWidget(self.cb_book)
+
+        filter_bar.addWidget(QLabel("Audience"))
+        filter_bar.addWidget(self.cb_audience)
+
         filter_bar.addWidget(QLabel("Type"))
         filter_bar.addWidget(self.cb_type)
+
         filter_bar.addWidget(QLabel("Model"))
         filter_bar.addWidget(self.cb_model)
+
         filter_bar.addWidget(QLabel("Status"))
         filter_bar.addWidget(self.cb_status)
+
         filter_bar.addStretch()
         filter_bar.addWidget(btn_refresh)
 
+        root = QVBoxLayout(self)
         root.addLayout(filter_bar)
+        # ===== TOP: BOOK SUMMARY TABLE =====
+        self.books_table = QTableWidget()
+        self.books_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.books_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.books_table.verticalHeader().setVisible(False)
+        root.addWidget(QLabel("📚 Book summary"))
+        root.addWidget(self.books_table)
+
+
+
 
         # ======================
         # TABLE
@@ -1421,6 +1742,9 @@ class StatsDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
+        self.selected_book_id = None
+        self.books_table.itemSelectionChanged.connect(self._on_book_selected)
+
 
         self.table.setStyleSheet("""
             QTableWidget { font-size:12px; }
@@ -1433,58 +1757,262 @@ class StatsDialog(QDialog):
             }
         """)
 
-        root.addWidget(self.table, 3)
+        
 
         # ======================
-        # COUNTER AREA + PIES
+        # COST COMPARISON AREA
         # ======================
-        self.figure_top = self._Figure()
-        self.canvas_top = self._FigureCanvas(self.figure_top)
-        root.addWidget(self.canvas_top, 2)
+        cost_block = QVBoxLayout()
+
+        self.figure_cost = self._Figure(figsize=(8, 4))
+        self.canvas_cost = self._FigureCanvas(self.figure_cost)
+
+        self.lbl_cost_summary = QLabel("Ideal: – € | Real: – € | Δ: – € (–%)")
+        self.lbl_cost_summary.setAlignment(Qt.AlignCenter)
+        self.lbl_cost_summary.setStyleSheet(
+            "font-size:14px;font-weight:bold;padding:6px;"
+        )
+
+        cost_block.addWidget(self.canvas_cost, 3)
+        cost_block.addWidget(self.lbl_cost_summary, 0)
+
+        root.addLayout(cost_block, 3)
 
         # ======================
-        # GRANULARITY SELECTOR
+        # TEMPORAL COST (STACKED BARS)
         # ======================
-        gran_layout = QHBoxLayout()
-        gran_layout.addWidget(QLabel("Time view:"))
+        bottom_block = QVBoxLayout()
+
+        gran_bar = QHBoxLayout()
+        gran_bar.addWidget(QLabel("Time aggregation"))
 
         self.cb_granularity = QComboBox()
-        self.cb_granularity.addItems(["Day", "Week", "Hour", "Minute"])
+        self.cb_granularity.addItems(["Hour", "Day", "Week", "Month"])
         self.cb_granularity.currentIndexChanged.connect(self.load_data)
 
-        gran_layout.addWidget(self.cb_granularity)
-        gran_layout.addStretch()
+        gran_bar.addWidget(self.cb_granularity)
+        gran_bar.addStretch()
 
-        root.addLayout(gran_layout)
+        bottom_block.addLayout(gran_bar)
 
-        # ======================
-        # LINE CHART
-        # ======================
-        self.figure_bottom = self._Figure()
-        self.canvas_bottom = self._FigureCanvas(self.figure_bottom)
-        root.addWidget(self.canvas_bottom, 3)
+        self.figure_time = self._Figure(figsize=(10, 4))
+        self.canvas_time = self._FigureCanvas(self.figure_time)
+
+        bottom_block.addWidget(self.canvas_time, 4)
+
+        root.addLayout(bottom_block, 4)
+
 
         # LOADING LABEL
         self.loading_label = QLabel("⏳ Loading statistics…")
         self.loading_label.setAlignment(Qt.AlignCenter)
         root.addWidget(self.loading_label)
+                # 🔥 FIX: render inicial
+        self.load_data()
 
         QTimer.singleShot(100, self.load_data)
 
     # ==================================================
     def load_data(self):
         import pandas as pd
+        from matplotlib.ticker import FuncFormatter
+        COLOR_IMG = "#1f77b4"   # azul (Images)
+        COLOR_TXT = "#ff7f0e"   # naranja (Text)
+        if not OPENAI_LOG_CSV_V2.exists():
+            QMessageBox.information(self, "No logs", "No log file found.")
+            self.loading_label.hide()
+            return
+        
+
+        df = pd.read_csv(OPENAI_LOG_CSV_V2)
+
+        # ===== BOOK SUMMARY (GLOBAL, NO FILTERS)
+        books_meta = load_all_books_metadata(PROJECTS_DIR)
+        summary_rows = build_book_summary(df, books_meta)
+
+        headers = list(summary_rows[0].keys()) if summary_rows else []
+        self.books_table.setColumnCount(len(headers))
+        self.books_table.setHorizontalHeaderLabels(headers)
+        self.books_table.setRowCount(len(summary_rows))
+
+        for r, row in enumerate(summary_rows):
+            for c, h in enumerate(headers):
+                item = QTableWidgetItem(str(row[h]))
+                if h == "Book":
+                    item.setData(Qt.UserRole, books_meta[row["Book"]]["book_id"])
+                self.books_table.setItem(r, c, item)
+
+        # Populate book & audience filters
+        self.cb_book.blockSignals(True)
+        self.cb_book.clear()
+        self.cb_book.addItem("All books")
+        for b in books_meta.values():
+            self.cb_book.addItem(b["book_id"])
+        self.cb_book.blockSignals(False)
+
+        self.cb_audience.blockSignals(True)
+        self.cb_audience.clear()
+        self.cb_audience.addItem("All audiences")
+        for a in sorted(set(b["audience"] for b in books_meta.values())):
+            self.cb_audience.addItem(a)
+        self.cb_audience.blockSignals(False)
+
+        self.books_table.resizeColumnsToContents()
+
 
         self.loading_label.show()
         QApplication.processEvents()
+        # ======================
+        # APPLY GLOBAL FILTERS
+        # ======================
+        df_f = df.copy()
 
-        if not OPENAI_LOG_CSV.exists():
+        if self.cb_book.currentText() != "All books":
+            df_f = df_f[df_f["book_id"] == self.cb_book.currentText()]
+
+        if self.cb_audience.currentText() != "All audiences":
+            df_f = df_f[df_f["book_id"].isin([
+                k for k, v in books_meta.items()
+                if v["audience"] == self.cb_audience.currentText()
+            ])]
+
+        if self.cb_type.currentText() != "All types":
+            df_f = df_f[df_f["type"] == self.cb_type.currentText()]
+
+        if self.cb_model.currentText() != "All models":
+            df_f = df_f[df_f["model"] == self.cb_model.currentText()]
+
+        if self.cb_status.currentText() != "All status":
+            df_f = df_f[df_f["status"] == self.cb_status.currentText()]
+
+        # ======================
+        # IDEAL vs REAL COST (STACKED)
+        # ======================
+        self.figure_cost.clear()
+        ax = self.figure_cost.add_subplot(111)
+
+        real_text = df_f[df_f["type"] == "generate_book_batch"]["cost_estimated"].sum()
+        real_img = df_f[df_f["type"] == "generate_image"]["cost_estimated"].sum()
+        real_total = real_text + real_img
+
+        ideal_text = 0.0
+        ideal_img = 0.0
+
+        for book_id in df_f["book_id"].unique():
+            meta = books_meta.get(book_id)
+            if not meta:
+                continue
+            est = estimate_book_cost(
+                pricing=PRICING_DATA,
+                text_model=DEFAULT_TEXT_MODEL,
+                image_model=DEFAULT_IMAGE_MODEL,
+                image_quality="low",
+                image_resolution="1024x1536",
+                num_images=meta["num_images"],
+            )
+            ideal_text += est["text_cost"]
+            ideal_img += est["image_cost"]
+
+        # Ideal
+        ax.barh("Ideal", ideal_img, color=COLOR_IMG, label="Images")
+        ax.barh("Ideal", ideal_text, left=ideal_img, color=COLOR_TXT, label="Text")
+
+        # Real
+        ax.barh("Real", real_img, color=COLOR_IMG)
+        ax.barh("Real", real_text, left=real_img, color=COLOR_TXT)
+
+        ax.set_xlabel("€")
+        ax.set_title("Ideal vs Real cost")
+        ax.legend()
+
+        delta = real_total - (ideal_text + ideal_img)
+        pct = (delta / (ideal_text + ideal_img) * 100) if (ideal_text + ideal_img) else 0
+
+        self.lbl_cost_summary.setText(
+            f"Ideal: {(ideal_text+ideal_img):.2f} € | "
+            f"Real: {real_total:.2f} € | "
+            f"Δ: {delta:+.2f} € ({pct:+.1f}%)"
+        )
+
+        self.canvas_cost.draw()
+
+
+        # ======================
+        # TEMPORAL STACKED BARS
+        # ======================
+        self.figure_time.clear()
+        ax = self.figure_time.add_subplot(111)
+
+        df_f["timestamp_start"] = pd.to_datetime(df_f["timestamp_start"], errors="coerce")
+        rule = {
+            "Hour": "h",    # pandas >= 2.0
+            "Day": "D",
+            "Week": "W",
+            "Month": "ME",  # month-end (estable)
+        }[self.cb_granularity.currentText()]
+
+
+        img = (
+            df_f[df_f["type"] == "generate_image"]
+            .set_index("timestamp_start")
+            .resample(rule)["cost_estimated"]
+            .sum()
+        )
+
+        txt = (
+            df_f[df_f["type"] == "generate_book_batch"]
+            .set_index("timestamp_start")
+            .resample(rule)["cost_estimated"]
+            .sum()
+        )
+
+        # 🔥 ALIGN INDICES (CLAVE)
+        df_stack = (
+            pd.concat([img, txt], axis=1, sort=False)
+            .fillna(0.0)
+        )
+        df_stack.columns = ["image", "text"]
+        df_stack = df_stack.sort_index()
+
+        now = pd.Timestamp.utcnow().tz_localize(None)
+
+
+        if self.cb_granularity.currentText() == "Hour":
+            since = now - pd.Timedelta(hours=12)
+        elif self.cb_granularity.currentText() == "Day":
+            since = now - pd.Timedelta(days=3)
+        elif self.cb_granularity.currentText() == "Week":
+            since = now - pd.Timedelta(weeks=3)
+        else:  # Month
+            since = now - pd.DateOffset(months=3)
+            
+        df_stack.index = df_stack.index.tz_localize(None)
+
+        df_stack = df_stack[df_stack.index >= since]
+
+
+
+        ax.bar(df_stack.index, df_stack["image"], label="Images", color=COLOR_IMG)
+        ax.bar(
+            df_stack.index,
+            df_stack["text"],
+            bottom=df_stack["image"],
+            label="Text",
+            color=COLOR_TXT
+        )
+        
+        ax.set_title(f"Cost over time ({self.cb_granularity.currentText()})")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        self.canvas_time.draw()
+
+        if not OPENAI_LOG_CSV_V2.exists():
             QMessageBox.information(self, "No logs", "No log file found.")
             self.loading_label.hide()
             return
 
-        df = pd.read_csv(OPENAI_LOG_CSV)
-
+        
         # ===== Filters populate
         self.cb_type.clear()
         self.cb_type.addItem("All types")
@@ -1507,94 +2035,10 @@ class StatsDialog(QDialog):
         # ======================
         # TABLE
         # ======================
-        self.table.setRowCount(len(df))
-        self.table.setColumnCount(len(df.columns))
-        self.table.setHorizontalHeaderLabels(df.columns.tolist())
-
-        for r in range(len(df)):
-            for c, col in enumerate(df.columns):
-                self.table.setItem(r, c, QTableWidgetItem(str(df.iloc[r][col])))
-
+        
         self.table.resizeColumnsToContents()
 
-        # ======================
-        # TOP CHARTS (Pies + counters)
-        # ======================
-        self.figure_top.clear()
 
-        ax1 = self.figure_top.add_subplot(131)
-        ax2 = self.figure_top.add_subplot(132)
-        ax3 = self.figure_top.add_subplot(133)
-
-        # Pie success/error
-        df["status"].value_counts().plot(
-            kind="pie",
-            autopct="%1.0f%%",
-            colors=["#00C853", "#FF5252"],
-            ax=ax1,
-        )
-        ax1.set_ylabel("")
-        ax1.set_title("Success vs Error")
-
-        # Pie endpoints
-        df["type"].value_counts().plot(
-            kind="pie",
-            autopct="%1.0f%%",
-            colors=["#2962FF", "#00BFA5"],
-            ax=ax2,
-        )
-        ax2.set_ylabel("")
-        ax2.set_title("Endpoint usage")
-
-        # COUNTERS PANEL
-        total_calls = len(df)
-        image_calls = len(df[df["type"] == "generate_image"])
-        text_calls = len(df[df["type"] == "generate_book_batch"])
-
-        ax3.axis("off")
-        ax3.text(
-            0.1, 0.7,
-            f"Total calls: {total_calls}\n\nText API: {text_calls}\nImage API: {image_calls}",
-            fontsize=14,
-            weight="bold",
-        )
-
-        self.figure_top.tight_layout()
-        self.canvas_top.draw()
-
-        # ======================
-        # LINE CHART (granularity)
-        # ======================
-        self.figure_bottom.clear()
-        ax = self.figure_bottom.add_subplot(111)
-
-        df["timestamp_start"] = pd.to_datetime(df["timestamp_start"], errors="coerce")
-
-        gran = self.cb_granularity.currentText()
-
-        if gran == "Day":
-            rule = "D"
-        elif gran == "Week":
-            rule = "W"
-        elif gran == "Hour":
-            rule = "H"
-        else:
-            rule = "T"
-
-        df.set_index("timestamp_start").resample(rule).size().plot(
-            ax=ax,
-            linewidth=2.8,
-            marker="o",
-            color="#00BFA5"
-        )
-
-        ax.set_title(f"Calls over time ({gran})")
-        ax.grid(True, alpha=0.2)
-
-        self.figure_bottom.tight_layout()
-        self.canvas_bottom.draw()
-
-        self.loading_label.hide()
 
 
 class MainWindow(QMainWindow):
@@ -1604,10 +2048,8 @@ class MainWindow(QMainWindow):
     def _unlock_ui(self):
         self.centralWidget().setEnabled(True)
         self.overlay.stop()
-
     def get_selected_image_resolution(self) -> str:
-        label = self.cb_image_resolution.currentText()
-        return IMAGE_RESOLUTIONS[label]
+        return self.cb_image_resolution.currentText().strip()
 
     def _refresh_requirement(self, which: str):
         if which == "img":
@@ -1627,6 +2069,65 @@ class MainWindow(QMainWindow):
                 "Text requirements",
                 data["status"],
             )
+
+    def update_text_price_label(self):
+        model = self.cb_text_model.currentText()
+        model_cfg = self.pricing.get("models", {}).get(model)
+
+        if not model_cfg or model_cfg.get("type") != "text":
+            self.lbl_text_price.setText("N/A")
+            return
+
+        in_p = model_cfg.get("input_token")
+        out_p = model_cfg.get("output_token")
+
+        if in_p is None or out_p is None:
+            self.lbl_text_price.setText("N/A")
+            return
+
+        self.lbl_text_price.setText(
+            f"In: {in_p:.4f} € / 1K | Out: {out_p:.4f} € / 1K"
+        )
+
+
+    def update_image_price_label(self):
+        model = self.cb_image_model.currentText()
+        quality = self.cb_image_quality.currentText()
+        resolution = self.cb_image_resolution.currentText()
+
+        model_cfg = self.pricing.get("models", {}).get(model)
+
+        if not model_cfg or model_cfg.get("type") != "image":
+            self.lbl_image_price.setText("N/A")
+            return
+
+        prices = model_cfg.get("prices", {})
+        price = prices.get(quality, {}).get(resolution)
+
+        if price is None:
+            self.lbl_image_price.setText("N/A")
+        else:
+            self.lbl_image_price.setText(f"{price:.4f} € / imagen")
+
+    def update_estimated_book_cost(self):
+        try:
+            num_images = self.sp_num.value()
+            est = estimate_book_cost(
+                pricing=self.pricing,
+                text_model=self.get_selected_text_model(),
+                image_model=self.get_selected_image_model(),
+                image_quality=self.cb_image_quality.currentText(),
+                image_resolution=self.get_selected_image_resolution(),
+                num_images=num_images,
+            )
+
+            self.lbl_estimated_cost.setText(
+                f"Estimated cost (no retries): "
+                f"{est['total_cost']} € "
+                f"(Text: {est['text_cost']} €, Images: {est['image_cost']} €)"
+            )
+        except Exception:
+            self.lbl_estimated_cost.setText("Estimated cost: N/A")
     def on_close_book_editorial(self):
         if self.project_dir is None or self.images_dir is None or not self.rows:
             QMessageBox.warning(self, "Close book", "Open a project with images first.")
@@ -1719,8 +2220,13 @@ class MainWindow(QMainWindow):
 
         pending = [
             row for row in self.rows
-            if row.approval_status != "approved"
-            and not (self.images_dir / f"{row.ID}.png").exists()
+            if (
+                row.approval_status == "pending"
+                or (
+                    row.approval_status == "rejected"
+                    and row.rejection_reason.strip()
+                )
+            )
         ]
 
 
@@ -1886,6 +2392,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Moxalia – Coloring Book Studio")
+        # --- Pricing data ---
+        self.pricing = PRICING_DATA
         self.resize(1400, 900)              # tamaño inicial razonable
         self.setMinimumSize(1280, 800)      # 👈 clave para pantallas 14"
         # --- Editorial status indicators ---
@@ -1907,15 +2415,15 @@ class MainWindow(QMainWindow):
 
         # New: Available model lists (can be extended at will)
         self.available_text_models = [
-            DEFAULT_TEXT_MODEL,
             "gpt-4.1-mini",
             "gpt-4",
             "gpt-3.5-turbo-1106",
         ]
         self.available_image_models = [
-            DEFAULT_IMAGE_MODEL,
             "dall-e-3",
             "gpt-image-1.5",
+            "gpt-image-1",
+            "gpt-image-1-mini",
         ]
 
         # ----- MENU BAR -----
@@ -1975,6 +2483,7 @@ class MainWindow(QMainWindow):
         acciones_menu.addAction(self.action_export_xls)
         self.action_export_xls.setEnabled(False)
 
+
         # ----- CENTRAL UI -----
         root = QWidget()
         self.setCentralWidget(root)
@@ -2025,13 +2534,17 @@ class MainWindow(QMainWindow):
         top_area.addWidget(actions_box, 1)
 
         # -------- COLUMN 2: PROJECT --------
+        self.lbl_estimated_cost = QLabel("Estimated cost: N/A")
+        self.lbl_estimated_cost.setStyleSheet("font-weight: bold; color: #d0d0d0;")
         project_box = QGroupBox("Project")
         project_layout = QVBoxLayout(project_box)
 
         self.lbl_project = QLabel("No book loaded")
         project_layout.addWidget(self.lbl_project)
-
+        project_layout.addWidget(self.lbl_estimated_cost)
         top_area.addWidget(project_box, 2)
+
+
 
         # -------- COLUMN 3: EDITORIAL REQUIREMENTS --------
         req_box = QGroupBox("Editorial requirements")
@@ -2100,6 +2613,17 @@ class MainWindow(QMainWindow):
         self.cb_idioma = QComboBox()
         self.cb_idioma.addItems(["es", "en", "it", "fr", "de"])
         self.cb_idioma.setCurrentText("es")
+        # --- Pricing info (read-only) ---
+        self.lbl_text_price = QLabel("-")
+        self.lbl_image_price = QLabel("-")
+
+        self.lbl_text_price.setStyleSheet("color: #9da9b5;")
+        self.lbl_image_price.setStyleSheet("color: #9da9b5;")
+
+        form_right.addRow("Precio texto (€/M tokens)", self.lbl_text_price)
+        form_right.addRow("Precio imagen (€/imagen)", self.lbl_image_price)
+
+
 
         # Model selectors
         self.cb_text_model = QComboBox()
@@ -2112,17 +2636,25 @@ class MainWindow(QMainWindow):
         form_right.addRow("Text model", self.cb_text_model)
 
         self.cb_image_resolution = QComboBox()
-        self.cb_image_resolution.addItems(IMAGE_RESOLUTIONS.keys())
-        self.cb_image_resolution.setCurrentText("Working (1024 x 1536)")
-        form_right.addRow("Image resolution", self.cb_image_resolution)
-
+        # Las resoluciones se cargarán dinámicamente según el modelo seleccionado    
+        
         self.cb_image_model = QComboBox()
         for m in self.available_image_models:
             self.cb_image_model.addItem(m)
         idx_image = self.cb_image_model.findText(DEFAULT_IMAGE_MODEL)
         if idx_image != -1:
             self.cb_image_model.setCurrentIndex(idx_image)
-        form_right.addRow("Image model", self.cb_image_model)
+        self.cb_image_model.currentTextChanged.connect(
+            self.on_image_model_changed
+        )
+        self.cb_image_quality = QComboBox()
+        self.cb_image_quality.addItems(["low", "medium", "high"])
+        self.cb_image_quality.setCurrentText("low")
+        form_right.addRow("Image model", self.cb_image_model)       
+        form_right.addRow("Image quality", self.cb_image_quality)
+        form_right.addRow("Image resolution", self.cb_image_resolution)
+        self.on_image_model_changed(self.cb_image_model.currentText())
+
         form_left.addRow("Book name", self.ed_book_id)
         form_left.addRow("Publico", self.cb_publico)
         form_left.addRow("Tema", self.ed_tema)
@@ -2134,6 +2666,12 @@ class MainWindow(QMainWindow):
         form_right.addRow("Dificultad inicial", self.cb_dif_ini)
         form_right.addRow("Dificultad final", self.cb_dif_fin)
         form_right.addRow("Idioma texto", self.cb_idioma)
+        # --- Estimated cost recalculation ---
+        self.sp_num.valueChanged.connect(self.update_estimated_book_cost)
+        self.cb_text_model.currentTextChanged.connect(self.update_estimated_book_cost)
+        self.cb_image_model.currentTextChanged.connect(self.update_estimated_book_cost)
+        self.cb_image_quality.currentTextChanged.connect(self.update_estimated_book_cost)
+        self.cb_image_resolution.currentTextChanged.connect(self.update_estimated_book_cost)
 
         self.btn_generate_book = QPushButton("Generate book")
         self.btn_generate_book.setEnabled(False)
@@ -2160,6 +2698,21 @@ class MainWindow(QMainWindow):
         self.table.cellClicked.connect(self.on_table_cell_clicked)
         self.table.cellDoubleClicked.connect(self.on_table_double_clicked)
         left.addWidget(self.table, 1)
+
+        # Update pricing labels on change
+        self.cb_text_model.currentTextChanged.connect(
+            lambda _: self.update_text_price_label()
+        )
+
+        self.cb_image_model.currentTextChanged.connect(
+            lambda _: self.update_image_price_label()
+        )
+        self.cb_image_quality.currentTextChanged.connect(
+            lambda _: self.update_image_price_label()
+        )
+        self.cb_image_resolution.currentTextChanged.connect(
+            lambda _: self.update_image_price_label()
+        )
 
         # Create icons for clickable/disabled
         self._icon_ok_pix = QPixmap(20, 20)
@@ -2230,7 +2783,32 @@ class MainWindow(QMainWindow):
         self.ed_book_id.textChanged.connect(self.validate_form)
         self.ed_tema.textChanged.connect(self.validate_form)
         self.ed_alcance.textChanged.connect(self.validate_form)
+        self.update_text_price_label()
+        self.update_image_price_label()
+        self.update_estimated_book_cost()
+
+
         self.validate_form()
+    def on_image_model_changed(self, model: str):
+        model = model.strip()
+
+        caps = IMAGE_MODEL_CAPABILITIES.get(model)
+        if not caps:
+            return
+
+        # --- Quality ---
+        self.cb_image_quality.blockSignals(True)
+        self.cb_image_quality.clear()
+        self.cb_image_quality.addItems(caps["qualities"])
+        self.cb_image_quality.setCurrentText(caps["default_quality"])
+        self.cb_image_quality.blockSignals(False)
+
+        # --- Resolution ---
+        self.cb_image_resolution.blockSignals(True)
+        self.cb_image_resolution.clear()
+        self.cb_image_resolution.addItems(caps["sizes"])
+        self.cb_image_resolution.setCurrentText(caps["default_size"])
+        self.cb_image_resolution.blockSignals(False)
     def _refresh_action_states(self):
         has_rows = bool(self.rows)
         has_project = self.project_dir is not None
@@ -2391,12 +2969,24 @@ class MainWindow(QMainWindow):
             else:
                 self.cb_text_model.setCurrentIndex(0)
 
-            image_model = spec.get("image_model", DEFAULT_IMAGE_MODEL)
+            image_settings = book_data.get("image_settings", {})
+
+            image_model = image_settings.get("image_model", DEFAULT_IMAGE_MODEL)
+            if isinstance(image_model, str):
+                image_model = image_model.strip()
+
+
+            # 🔴 NORMALIZACIÓN CRÍTICA
+            if isinstance(image_model, str):
+                image_model = image_model.strip().lower()
+
             idx = self.cb_image_model.findText(image_model)
             if idx != -1:
                 self.cb_image_model.setCurrentIndex(idx)
             else:
                 self.cb_image_model.setCurrentIndex(0)
+
+
 
             image_resolution = spec.get("image_resolution", "Working (1024 x 1536)")
             idx = self.cb_image_resolution.findText(image_resolution)
@@ -2406,6 +2996,23 @@ class MainWindow(QMainWindow):
                 self.cb_image_resolution.setCurrentIndex(0)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error restaurando campos de book.json:\n{e}")
+            return
+        image_quality = spec.get("image_quality", "low")
+        idx = self.cb_image_quality.findText(image_quality)
+        if idx != -1:
+            self.cb_image_quality.setCurrentIndex(idx)
+        else:
+            self.cb_image_quality.setCurrentIndex(0)
+
+        # 🔴 FIX CRÍTICO: restaurar current_spec
+        try:
+            self.current_spec = BookSpec(**spec)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Invalid book spec in book.json:\n{e}"
+            )
             return
 
         # Set directories
@@ -2485,6 +3092,7 @@ class MainWindow(QMainWindow):
         self.validate_form()
         self.action_generar_libro.setEnabled(True)
         self.update_editorial_status()
+        self.update_estimated_book_cost()
         self._refresh_action_states()
     def on_save_project(self, *, silent: bool = False):
         # 1) Validar formulario
@@ -2531,6 +3139,7 @@ class MainWindow(QMainWindow):
                     "image_settings": {
                         "image_model": self.get_selected_image_model(),
                         "image_resolution": self.get_selected_image_resolution(),
+                        "image_quality": self.cb_image_quality.currentText(),
                     },
                     "text_settings": {
                         "text_model": self.get_selected_text_model(),
@@ -2663,7 +3272,7 @@ class MainWindow(QMainWindow):
         return BookSpec(
             book_id=self.ed_book_id.text().strip(),
             publico=self.cb_publico.currentText(),
-            tema = self.ed_tema.toPlainText().strip(),
+            tema=self.ed_tema.toPlainText().strip(),
             alcance_geografico=self.ed_alcance.text().strip(),
             tipo_imagenes=self.ed_tipo.text().strip(),
             numero_imagenes=int(self.sp_num.value()),
@@ -2672,7 +3281,9 @@ class MainWindow(QMainWindow):
             dificultad_inicial=self.cb_dif_ini.currentText(),
             dificultad_final=self.cb_dif_fin.currentText(),
             idioma_texto=self.cb_idioma.currentText(),
+            image_quality=self.cb_image_quality.currentText(),
         )
+
 
     def get_selected_text_model(self) -> str:
         return self.cb_text_model.currentText().strip() or DEFAULT_TEXT_MODEL
@@ -2860,10 +3471,13 @@ class MainWindow(QMainWindow):
         self._unlock_ui()
 
         # localizar la fila correspondiente y marcarla pending
-        for r in self.rows:
+        for idx, r in enumerate(self.rows):
             if out_path.endswith(f"{r.ID}.png"):
                 r.approval_status = "pending"
+                r.rejection_reason = ""
+                self._apply_row_color(idx, "pending")
                 break
+        self.update_editorial_status()
 
         # Refrescar icono de la fila
         for r_idx, row in enumerate(self.rows):
@@ -2914,9 +3528,13 @@ class MainWindow(QMainWindow):
             self.client,
             row,
             image_model,
+            self.current_spec.image_quality,
             image_resolution,
             self.images_dir,
+            self.current_spec.book_id,
         )
+
+
         worker.signals.ok.connect(self.on_image_generated)
         worker.signals.err.connect(self.on_worker_error)
         self.pool.start(worker)

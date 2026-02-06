@@ -1,0 +1,120 @@
+{
+  "pricing_version": "2026-02-standard",
+  "source": "https://platform.openai.com/docs/pricing",
+  "currency": "USD",
+  "unit_notes": {
+    "text_token_prices": "USD per 1 token",
+    "image_per_image_prices": "USD per generated image"
+  },
+  "models": {
+    "gpt-4.1-mini": {
+      "type": "text",
+      "input_token": 4.0e-7,
+      "cached_input_token": 1.0e-7,
+      "output_token": 1.6e-6
+    },
+    "gpt-4": {
+      "type": "text",
+      "input_token": 3.0e-5,
+      "output_token": 6.0e-5,
+      "notes": "Deprecated model; prices sourced from model page."
+    },
+    "gpt-3.5-turbo-1106": {
+      "type": "text",
+      "input_token": 5.0e-7,
+      "output_token": 1.5e-6,
+      "notes": "Snapshot pricing not listed separately; using GPT-3.5 Turbo listed pricing."
+    },
+    "gpt-image-1.5": {
+      "type": "image",
+      "prices": {
+        "low": {
+          "1024x1024": 0.009,
+          "1024x1536": 0.013,
+          "1536x1024": 0.013
+        },
+        "medium": {
+          "1024x1024": 0.034,
+          "1024x1536": 0.05,
+          "1536x1024": 0.05
+        },
+        "high": {
+          "1024x1024": 0.133,
+          "1024x1536": 0.2,
+          "1536x1024": 0.2
+        }
+      }
+    },
+    "gpt-image-1": {
+      "type": "image",
+      "prices": {
+        "low": {
+          "1024x1024": 0.011,
+          "1024x1536": 0.016,
+          "1536x1024": 0.016
+        },
+        "medium": {
+          "1024x1024": 0.042,
+          "1024x1536": 0.063,
+          "1536x1024": 0.063
+        },
+        "high": {
+          "1024x1024": 0.167,
+          "1024x1536": 0.25,
+          "1536x1024": 0.25
+        }
+      }
+    },
+    "gpt-image-1-mini": {
+      "type": "image",
+      "prices": {
+        "low": {
+          "1024x1024": 0.005,
+          "1024x1536": 0.006,
+          "1536x1024": 0.006
+        },
+        "medium": {
+          "1024x1024": 0.011,
+          "1024x1536": 0.015,
+          "1536x1024": 0.015
+        },
+        "high": {
+          "1024x1024": 0.036,
+          "1024x1536": 0.052,
+          "1536x1024": 0.052
+        }
+      }
+    },
+    "dall-e-3": {
+      "type": "image",
+      "prices": {
+        "standard": {
+          "1024x1024": 0.04,
+          "1024x1536": 0.08,
+          "1536x1024": 0.08
+        },
+        "hd": {
+          "1024x1024": 0.08,
+          "1024x1536": 0.12,
+          "1536x1024": 0.12
+        },
+        "low": {
+          "1024x1024": 0.04,
+          "1024x1536": 0.08,
+          "1536x1024": 0.08
+        },
+        "medium": {
+          "1024x1024": 0.04,
+          "1024x1536": 0.08,
+          "1536x1024": 0.08
+        },
+        "high": {
+          "1024x1024": 0.08,
+          "1024x1536": 0.12,
+          "1536x1024": 0.12
+        }
+      },
+      "notes": "App uses low/medium/high; mapped low/medium->standard and high->hd."
+    }
+  }
+}

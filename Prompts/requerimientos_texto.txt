@@ -6,7 +6,7 @@ LANGUAGE
 The editorial text MUST be written in the language defined in the book input.
 
 LENGTH
-- Between 5 and 10 lines.
+- Between 8 to  10 lines at least more than 60 words
 
 TONE
 - Reflective

@@ -1,0 +1,12 @@
+[33me9631a2[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;33mtag: [m[1;33mv1.7[m[33m, [m[1;31morigin/stable/v1.7[m[33m, [m[1;31morigin/main[m[33m, [m[1;32mstable/v1.7[m[33m)[m V1.7 Stable
+[33m2eac8aa[m v1.6 hardening: enforce white background, no borders, stronger complexity differentiation
+[33m2b35a29[m chore: prepare assets and config for Windows installer
+[33m1b6b879[m[33m ([m[1;33mtag: [m[1;33mv1.6[m[33m)[m v1.6 - Unified image generation UX (overlay + batch feedback)
+[33m870444d[m[33m ([m[1;33mtag: [m[1;33mv1.5[m[33m)[m v1.5 - Robust generation flow, forced save and UI lock
+[33m3b942fa[m[33m ([m[1;33mtag: [m[1;33mv1.4[m[33m)[m v1.4 - Editorial freeze, rejection feedback regeneration, global status indicators
+[33mdcee612[m[33m ([m[1;33mtag: [m[1;33mv1.4-dev[m[33m)[m A4.4: regenerate rejected images using rejection feedback + preserve rejection context in review
+[33m31e3b00[m[33m ([m[1;33mtag: [m[1;33mv1.3[m[33m)[m v1.3 - Stable Image Review, Editorial Lock groundwork
+[33m1a78de9[m v1.1: mejoras de manejo y visualesm, incluir pop up y approval rejection
+[33md959e94[m[33m ([m[1;33mtag: [m[1;33mv1.1[m[33m)[m v1.1: Image resolution selector (working vs final KDP)
+[33m0a817a6[m[33m ([m[1;33mtag: [m[1;33mv1.0[m[33m)[m v1.0: Deterministic prompt generation, editorial rules enforcement, and unified UI preview
+[33m89b7eaf[m Initial commit: clean KDP app (no binaries)

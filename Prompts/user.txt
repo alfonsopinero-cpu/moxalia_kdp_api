@@ -18,21 +18,39 @@ GOAL
 
 Create a coherent list of immersive scenes for a coloring book.
 
+GEOGRAPHIC CONTEXT RULE (CRITICAL)
+
+If the book scope refers to a SINGLE COUNTRY (e.g. Peru, Spain, Italy):
+
+- The field "Pais_Region" MUST contain an INTERNAL REGION of that country
+  (state, department, province, community, area, etc).
+- Do NOT repeat the same internal region more than allowed.
+- Do NOT use the country name itself as "Pais_Region".
+
+If the book scope refers to MULTIPLE COUNTRIES (e.g. Europe, Asia, World):
+
+- The field "Pais_Region" MUST contain the COUNTRY name.
+- Distribute countries naturally across the book.
+
+
 SCENE RULES
 
-* One country per illustration.
+* One geographic location per illustration.
 * One main monument per scene.
 * Scenes must feel immersive and human-scale.
 * Avoid repeating the same monument.
-* Distribute countries naturally across the book.
+* Follow the GEOGRAPHIC CONTEXT RULE to decide whether this is a country or an internal region.
 
-BLOCKED COUNTRIES RULE
 
-The following countries are forbidden for this batch:
+BLOCKED GEOGRAPHIC UNITS RULE
+
+The following geographic units are forbidden for this batch
+(countries in multi-country books, or internal regions in single-country books):
 
 {blocked_countries}
 
 You MUST NOT use them.
+
 
 ALREADY GENERATED IN THIS BOOK (Dynamic Input)
 
@@ -94,6 +112,15 @@ If you generate a different number of rows, the system will reject the batch.
 The JSON array must contain ONLY the illustration objects.
 No explanations.
 No text outside JSON.
+
+FIELD SEMANTICS (IMPORTANT)
+
+"Pais_Region":
+- Represents the COUNTRY name for multi-country books.
+- Represents an INTERNAL REGION for single-country books.
+- Must NEVER be empty.
+- Must NEVER repeat blocked geographic units.
+
 
 OUTPUT FORMAT (STRICT JSON STRUCTURE)
 

@@ -7,9 +7,8 @@ The output MUST be black-and-white line art, fully colorable.
 
 FORMAT & CANVAS
 - Vertical orientation only.
-- Single illustration per page.
 - Full-page immersive composition.
-- Drawing must visually reach ALL page edges.
+- Drawing must visually reach top, right left and down page edges.
 - No floating centered objects.
 
 BACKGROUND (CRITICAL)
@@ -32,7 +31,7 @@ LINE STYLE (STRICT)
 COMPOSITION & IMMERSION
 - Viewer must feel INSIDE the scene.
 - Human-scale POV only.
-- Street, park, path, square, riverbank or bridge perspective.
+- Realistic surrondings to the monuments as main focus of the image
 - NEVER aerial or postcard framing.
 
 FOREGROUND ANCHOR (MANDATORY)
@@ -42,7 +41,7 @@ FOREGROUND ANCHOR (MANDATORY)
 BORDERS RULE
 - Scene must touch ALL edges.
 - NO rectangular frames or borders.
-- Foreground MUST include large cropped objects touching left, right and bottom edges (plants, furniture or people).
+- Foreground MUST include large cropped objects touching left, right and bottom edges 
 - No empty foreground allowed.
 
 SKY RULE
