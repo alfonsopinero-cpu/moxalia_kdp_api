@@ -35,19 +35,18 @@ COMPOSITION & IMMERSION
 - NEVER aerial or postcard framing.
 
 FOREGROUND ANCHOR (MANDATORY)
-- Elements entering from BOTTOM edge.
-- Must be partially cropped by frame.
+- Elements entering from top, bottom, left and right edges.
+- Must be partially cropped.
 
 BORDERS RULE
-- Scene must touch ALL edges.
-- NO rectangular frames or borders.
-- Foreground MUST include large cropped objects touching left, right and bottom edges 
-- No empty foreground allowed.
+- Scene must touch top, down, left and right edges.
+- MANDATORY to dont use frames for the image
 
 SKY RULE
 - Max 20% sky.
 - Sky must contain line elements some but not all (clouds, birds, sun, moon, airplanes).
 - Top edge must include architecture or vegetation.
+- sky objects must be closed figures
 
 ARCHITECTURE
 - Realistic proportions.
@@ -55,14 +54,44 @@ ARCHITECTURE
 - Real surroundings to the monuments
 - Clean line work.
 
-NATURE
-- Vegetation open-line style.
-- Mountains with contour lines only.
-- Water with line motion only.
+NATURE (STRICT — LOCATION ACCURACY)
+
+Vegetation, landscape elements and animals MUST be geographically and climatically correct for the specific city or region depicted.
+
+GENERAL RULE
+- Use ONLY flora and fauna that are typical, common and naturally occurring in the real location.
+- The scene must reflect the natural environment that a local resident would expect to see.
+
+URBAN VEGETATION
+- If the scene is in a city, use ONLY trees and plants commonly found in that city or its region.
+- Prefer typical urban trees (e.g. plane trees, oaks, pines, cypresses, maples, lindens, chestnuts, olive trees where appropriate).
+- Avoid decorative, tropical or exotic plants unless they are genuinely native and common in that location.
+
+STRICTLY FORBIDDEN VEGETATION
+- NO palm trees in non-tropical cities.
+- NO tropical plants outside tropical climates.
+- NO desert vegetation outside arid regions.
+- NO generic “Mediterranean clichés” unless they are botanically accurate for the specific place.
+
+ANIMALS (IF PRESENT)
+- Animals are OPTIONAL.
+- If included, they MUST be realistic, native and commonly seen in the area.
+- Prefer birds or small urban fauna typical of the region.
+- NO exotic animals.
+- NO animals that do not naturally exist in that climate or geography.
+- If unsure, OMIT animals entirely.
+
+FALLBACK RULE (IMPORTANT)
+- If there is any uncertainty about correct local vegetation or animals, DO NOT include them.
+- It is better to show architecture and neutral ground elements than incorrect nature.
 
 PEOPLE
 - Secondary presence only.
-- Natural behavior.
+- Natural behavior
+- No faces in the back
+- No ghots faces
+- No extra legs or extra arms
+- No crowded images, just some people if required
 
 CORE PRINCIPLE
 We do not draw monuments.
@@ -74,3 +103,4 @@ PROHIBITED CONTENT
 - No numbers.
 - No signatures.
 - No decorative borders.
+- No frames 

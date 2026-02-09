@@ -7,6 +7,19 @@
     "image_per_image_prices": "USD per generated image"
   },
   "models": {
+    "gpt-5": {
+      "type": "text",
+      "input_token": 5.0e-6,
+      "cached_input_token": 2.5e-6,
+      "output_token": 1.5e-5
+    },
+    "gpt-5-mini": {
+      "type": "text",
+      "input_token": 2.0e-7,
+      "cached_input_token": 5.0e-8,
+      "output_token": 1.8e-6
+    },
+
     "gpt-4.1-mini": {
       "type": "text",
       "input_token": 4.0e-7,

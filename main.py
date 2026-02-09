@@ -372,6 +372,19 @@ DIFFICULTY_RANGES = {
     "Extremo": (76, 100),
 }
 
+def difficulty_descriptors(block_es: str) -> dict:
+    """
+    Map Spanish difficulty blocks (Bajo/Medio/Alto/Extremo) to semantic descriptors
+    that image models understand reliably.
+    """
+    mapping = {
+        "Bajo":    {"line": "very thick", "space": "very large", "detail": "very simple"},
+        "Medio":   {"line": "thick",      "space": "large",      "detail": "moderate"},
+        "Alto":    {"line": "medium",     "space": "moderate",   "detail": "detailed"},
+        "Extremo": {"line": "thin",       "space": "minimal",    "detail": "highly detailed"},
+    }
+    return mapping[block_es]
+
 def build_difficulty_sequence(total: int, start: str, end: str) -> list[dict]:
     if start not in DIFFICULTY_RANGES or end not in DIFFICULTY_RANGES:
         raise ValueError("Invalid difficulty block")
@@ -397,12 +410,17 @@ def build_difficulty_sequence(total: int, start: str, end: str) -> list[dict]:
         )
 
         x = d / 100.0
+        labels = difficulty_descriptors(block)
+
         sequence.append({
             "D": d,
             "block": block,
             "L": round(0.25 + 0.55 * x, 2),
             "W": round(0.75 - 0.55 * x, 2),
             "C": round(0.15 + 0.75 * x, 2),
+            "LINE_LABEL": labels["line"],
+            "SPACE_LABEL": labels["space"],
+            "DETAIL_LABEL": labels["detail"],
         })
 
     return sequence
@@ -493,7 +511,7 @@ def generate_illustrations(
 ) -> List[IllustrationRow]:
 
     total = spec.numero_imagenes
-    batch_size = 5
+    batch_size = 8
     MAX_EXTRA_BATCHES = 10
     planned_batches = (total + batch_size - 1) // batch_size
     max_batches = planned_batches + MAX_EXTRA_BATCHES
@@ -664,13 +682,18 @@ def generate_illustrations(
         row.Line_thickness_L = diff["L"]
         row.White_space_W = diff["W"]
         row.Complexity_C = diff["C"]
+
+        line_label = diff["LINE_LABEL"]
+        space_label = diff["SPACE_LABEL"]
+        detail_label = diff["DETAIL_LABEL"]
+        
         row.Prompt_final = inject_difficulty(
             row.Prompt_final,
             {
                 "block": row.Difficulty_block,
-                "line_thickness": row.Line_thickness_L,
-                "white_space": row.White_space_W,
-                "complexity": row.Complexity_C,
+                "line_label": line_label,
+                "space_label": space_label,
+                "detail_label": detail_label,
             }
         )
         
@@ -916,25 +939,32 @@ def estimate_book_cost(
 
 def inject_difficulty(prompt_final: str, difficulty: dict) -> str:
     """
-    Injects deterministic difficulty constraints into a Prompt_final.
+    Injects deterministic difficulty constraints into a Prompt_final using
+    semantic descriptors (model-friendly).
     """
-
-    difficulty_block = difficulty["block"]          # low / medium / high / extreme
-    line_thickness = difficulty["line_thickness"]   # e.g. thick / thin / very thin
-    white_space = difficulty["white_space"]         # e.g. high / medium / minimal
-    complexity = difficulty["complexity"]           # e.g. simple / complex / very complex
+    block = difficulty["block"]                 # Bajo/Medio/Alto/Extremo
+    line = difficulty["line_label"]             # very thick / thick / medium / thin
+    space = difficulty["space_label"]           # very large / large / moderate / minimal
+    detail = difficulty["detail_label"]         # very simple / moderate / detailed / highly detailed
 
     difficulty_instructions = f"""
 DIFFICULTY CONSTRAINTS (MANDATORY)
-- Overall difficulty level: {difficulty_block}.
-- Line thickness: {line_thickness} black outlines only.
-- White space: {white_space} areas, increasing coloring challenge.
-- Structural complexity: {complexity}, with corresponding amount of details.
-These constraints are mandatory and override any ambiguity.
+Overall difficulty: {block}
+
+Line work:
+- Use {line} black outlines
+
+Composition:
+- Keep {space} empty areas between elements
+- Avoid overcrowding beyond this level
+
+Detail level:
+- Keep the scene {detail}
+
+These constraints are strict and must be followed exactly.
 """
 
     return f"{prompt_final.strip()}\n\n{difficulty_instructions.strip()}"
-
 class GenerateImageWorker(QRunnable):
     def __init__(
         self,
@@ -962,6 +992,7 @@ class GenerateImageWorker(QRunnable):
             out_path = self.images_dir / f"{self.row.ID}.png"
 
             # --- BASE PROMPTS ---
+            labels = difficulty_descriptors(self.row.Difficulty_block)
             prompt = (
                 "THIS IS A PRINT COLORING BOOK ILLUSTRATION.\n"
                 "BLACK AND WHITE LINE ART ONLY.\n"
@@ -972,9 +1003,11 @@ class GenerateImageWorker(QRunnable):
                 "DIFFICULTY PARAMETERS (MANDATORY – DO NOT IGNORE):\n"
                 f"- Difficulty block: {self.row.Difficulty_block}\n"
                 f"- Difficulty score (0–100): {self.row.Difficulty_D}\n"
-                f"- Line thickness (L): {self.row.Line_thickness_L}\n"
-                f"- White space ratio (W): {self.row.White_space_W}\n"
-                f"- Visual complexity (C): {self.row.Complexity_C}\n\n"
+                
+
+                f"- Line work: {labels['line']} black outlines\n"
+                f"- White space: {labels['space']} empty areas\n"
+                f"- Detail level: {labels['detail']}\n\n"
 
                 f"{self.row.Prompt_final}\n\n"
 
@@ -1650,6 +1683,7 @@ class BatchImageGenerationDialog(QDialog):
         worker.signals.err.connect(self._on_error)
         
         self.parent_window.pool.start(worker)
+
     def _on_image_done(self, out_path: str):
         self.lbl_generating.hide()
         self.progress_local.hide()
@@ -1672,6 +1706,15 @@ class BatchImageGenerationDialog(QDialog):
 
         self.progress.setValue(self.current + 1)
 
+        # Avanzar al siguiente
+        self.current += 1
+
+        if self.stop_requested or self.current >= self.total:
+            self.accept()   # cerrar diálogo
+            return
+
+        self._start_current()
+
         for r_idx, r in enumerate(self.parent_window.rows):
             if r.ID == row.ID:
                 item = QTableWidgetItem()
@@ -1680,6 +1723,7 @@ class BatchImageGenerationDialog(QDialog):
                 item.setTextAlignment(Qt.AlignCenter)
                 self.parent_window.table.setItem(r_idx, 0, item)
                 break
+
 
     def _on_error(self, msg: str):
         self.lbl_generating.hide()

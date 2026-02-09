@@ -1,31 +1,35 @@
-EDITORIAL TEXT REQUIREMENTS (MANDATORY)
-
-Generate a short poetic editorial text inspired by the illustrated scene.
+TASK
+Write a  calm, poetic text meant to be read just before coloring.
+The text should place the reader in a quiet, reflective state, without describing the image or explaining the place.
 
 LANGUAGE
-The editorial text MUST be written in the language defined in the book input.
+- Use the book language.
 
-LENGTH
-- Between 8 to  10 lines at least more than 60 words
-
-TONE
-- Reflective
-- Calm
-- Evocative
-- Timeless
-
-CONTENT RULES
-- Emotional connection with the place.
-- Focus on atmosphere and feelings.
-- Sensory language allowed (light, air, water, silence, distance).
-
-STRICT PROHIBITIONS
-- No historical facts.
-- No architectural explanations.
-- No educational tone.
-- No dates or names.
+LENGTH (MANDATORY)
+- 2 or 3 short paragraphs (50 to 100 words)
 
 STYLE
-- Poetic prose.
-- Natural flowing sentences.
-- Not rhymed poetry.
+- Simple, contained, reflective prose.
+- Focus on ideas like time, memory, permanence, presence, human passage, future or others 
+- Write as if it were a quiet thought, not a description.
+
+CONTENT RULES
+- You may mention the place or monument name once, or not at all.
+- Do NOT describe visual elements, architecture, or scenery.
+- Do NOT include historical facts or explanations.
+- Do NOT tell the reader how to feel.
+
+TONE
+- Subtle, calm, and grounded.
+- Avoid poetic excess, metaphors stacked on metaphors, or lyrical decoration.
+- Fewer words, more weight.
+
+AVOID
+- Describing what is seen in the illustration.
+- Explaining meaning.
+- Educational or narrative tone.
+- Repeated formulas or openings.
+
+GOAL
+The text should feel like a pause.
+Something that prepares the mind to begin coloring, not something to analyze.   
