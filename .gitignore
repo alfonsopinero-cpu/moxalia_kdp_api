@@ -1,10 +1,10 @@
 # Local backups / WIP
-*-old.txt
+*old.txt
 WIP_before_rollback.patch
 
 # Local logs
 logs/*.csv
-
+git s
 # Python
 __pycache__/
 *.pyc
